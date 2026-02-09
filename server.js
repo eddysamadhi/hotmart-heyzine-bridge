@@ -114,29 +114,25 @@ app.post("/webhooks/hotmart", async (req, res) => {
 
     // 3) Idempotência para eventos que criam acesso
     if (event === "PURCHASE_APPROVED") {
-      if (processedTransactions.has(transaction)) {
-        return res.status(200).send("OK");
-      }
-      processedTransactions.add(transaction);
+		  if (processedTransactions.has(transaction)) {
+		    console.log(`Duplicate PURCHASE_APPROVED skipped: ${transaction}`);
+		    return res.status(200).send("OK");
+		  }
+		
+		  const password = genPassword();
+		
+		  await heyzineAccessAdd({
+		    name: mapped.name,
+		    user: buyerEmail,
+		    password,
+		  });
+		
+		  processedTransactions.add(transaction);
+		
+		  console.log(`Access granted: ${buyerEmail} -> ${mapped.name} (${transaction})`);
+		  return res.status(200).send("OK");
+		}
 
-      const password = genPassword();
-
-      // 3.1) Cria acesso individual no Heyzine
-      await heyzineAccessAdd({
-        name: mapped.name,
-        user: buyerEmail,
-        password,
-      });
-
-      // 3.2) Envio de e-mail (implementar)
-      // Aqui você envia: mapped.url + buyerEmail + password
-      // sendEmail(buyerEmail, mapped.url, password);
-
-      // Não logue CPF / endereço. Log mínimo:
-      console.log(`Access granted: ${buyerEmail} -> ${mapped.name} (${transaction})`);
-
-      return res.status(200).send("OK");
-    }
 
     // 4) Eventos que revogam acesso
     if (
