@@ -19,7 +19,6 @@ const PRODUCT_MAP = {
   "fb056612-bcc6-4217-9e6d-2a5d1110ac2f": { name: "Udhar.pdf", url: "https://heyzine.com/flip-book/df5dc91fb8.html" },
 };
 
-};
 const ALLOW_DUPLICATE_TESTS = process.env.ALLOW_DUPLICATE_TESTS === "true";
 
 // ====== Idempotência simples (memória) ======
