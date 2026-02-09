@@ -15,14 +15,10 @@ const HEYZINE_API_KEY = process.env.HEYZINE_API_KEY;
 
 // 3) Mapa Hotmart -> Heyzine (ajuste com seus dados reais)
 const PRODUCT_MAP = {
-  // Use product.id quando vier (ex.: 1234567)
-  // "4774438": { name: "Udhar.pdf", url: "https://heyzine.com/flip-book/df5dc91fb8.html" },
+  "4774438": { name: "Udhar.pdf", url: "https://heyzine.com/flip-book/df5dc91fb8.html" },
+  "fb056612-bcc6-4217-9e6d-2a5d1110ac2f": { name: "Udhar.pdf", url: "https://heyzine.com/flip-book/df5dc91fb8.html" },
+};
 
-  // Use ucode como fallback
-  "fb056612-bcc6-4217-9e6d-2a5d1110ac2f": {
-    name: "Udhar.pdf",
-    url: "https://heyzine.com/flip-book/df5dc91fb8.html",
-  },
 };
 const ALLOW_DUPLICATE_TESTS = process.env.ALLOW_DUPLICATE_TESTS === "true";
 
@@ -125,11 +121,13 @@ app.post("/webhooks/hotmart", async (req, res) => {
 	
 	  const password = genPassword();
 	
-	  await heyzineAccessAdd({
-	    name: mapped.name,
-	    user: buyerEmail,
-	    password,
-	  });
+	 const result = await heyzineAccessAdd({
+		  name: mapped.name,
+		  user: buyerEmail,
+		  password,
+		});
+		console.log("Heyzine access-add result:", result);
+
 	
 	  processedTransactions.add(transaction);
 	
