@@ -5,6 +5,8 @@ const app = express();
 app.use(express.json({ limit: "1mb" }));
 
 // ====== CONFIG (Railway env vars) ======
+
+
 // 1) Um segredo que só você conhece (protege o endpoint)
 const HOTMART_HOTTOK = process.env.HOTMART_HOTTOK;
 
@@ -22,10 +24,17 @@ const PRODUCT_MAP = {
     url: "https://heyzine.com/flip-book/df5dc91fb8.html",
   },
 };
+const ALLOW_DUPLICATE_TESTS = process.env.ALLOW_DUPLICATE_TESTS === "true";
 
 // ====== Idempotência simples (memória) ======
 // Em produção “forte”, use banco. Para começar, isso já evita duplicar em replays rápidos.
 const processedTransactions = new Set();
+
+if (!ALLOW_DUPLICATE_TESTS && processedTransactions.has(transaction)) {
+  console.log(`Duplicate PURCHASE_APPROVED skipped: ${transaction}`);
+  return res.status(200).send("OK");
+}
+
 
 // ====== Utils ======
 function genPassword() {
