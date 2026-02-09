@@ -15,7 +15,7 @@ const HEYZINE_API_KEY = process.env.HEYZINE_API_KEY;
 
 // 3) Mapa Hotmart -> Heyzine (ajuste com seus dados reais)
 const PRODUCT_MAP = {
-  "4774438": { name: "Udhar.pdf", url: "https://heyzine.com/flip-book/df5dc91fb8.html" },
+  "4774438": { name: "df5dc91fb87d2f5156abb23526e79c6a7692b147.pdf", url: "https://heyzine.com/flip-book/df5dc91fb8.html" },
   "fb056612-bcc6-4217-9e6d-2a5d1110ac2f": { name: "Udhar.pdf", url: "https://heyzine.com/flip-book/df5dc91fb8.html" },
 };
 
