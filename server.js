@@ -54,11 +54,19 @@ async function heyzineAccessAdd({ name, user, password }) {
     }),
   });
 
+  const data = await res.json().catch(async () => ({ raw: await res.text() }));
+
+  // 1) erro HTTP
   if (!res.ok) {
-    const txt = await res.text();
-    throw new Error(`Heyzine access-add failed (${res.status}): ${txt}`);
+    throw new Error(`Heyzine access-add failed (${res.status}): ${JSON.stringify(data)}`);
   }
-  return res.json();
+
+  // 2) erro lógico (success:false)
+  if (data?.success === false) {
+    throw new Error(`Heyzine access-add failed (logical): ${JSON.stringify(data)}`);
+  }
+
+  return data;
 }
 
 async function heyzineAccessRemove({ name, user }) {
@@ -71,12 +79,25 @@ async function heyzineAccessRemove({ name, user }) {
     body: JSON.stringify({ name, user }),
   });
 
+  const data = await res.json().catch(async () => ({ raw: await res.text() }));
+
+  // 1) erro HTTP
   if (!res.ok) {
-    const txt = await res.text();
-    throw new Error(`Heyzine access-remove failed (${res.status}): ${txt}`);
+    throw new Error(
+      `Heyzine access-remove failed (${res.status}): ${JSON.stringify(data)}`
+    );
   }
-  return res.json();
+
+  // 2) erro lógico (HTTP 200 mas success:false)
+  if (data?.success === false) {
+    throw new Error(
+      `Heyzine access-remove failed (logical): ${JSON.stringify(data)}`
+    );
+  }
+
+  return data;
 }
+
 
 // ====== Healthcheck ======
 app.get("/", (req, res) => res.status(200).send("OK"));
