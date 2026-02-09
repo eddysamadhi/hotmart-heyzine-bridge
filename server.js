@@ -30,12 +30,6 @@ const ALLOW_DUPLICATE_TESTS = process.env.ALLOW_DUPLICATE_TESTS === "true";
 // Em produção “forte”, use banco. Para começar, isso já evita duplicar em replays rápidos.
 const processedTransactions = new Set();
 
-if (!ALLOW_DUPLICATE_TESTS && processedTransactions.has(transaction)) {
-  console.log(`Duplicate PURCHASE_APPROVED skipped: ${transaction}`);
-  return res.status(200).send("OK");
-}
-
-
 // ====== Utils ======
 function genPassword() {
   // senha forte e curta o suficiente para digitar (12 chars base64url)
@@ -103,6 +97,7 @@ app.post("/webhooks/hotmart", async (req, res) => {
     }
 
     const payload = req.body;
+	console.log(">>> webhook", new Date().toISOString(), payload?.event, payload?.data?.purchase?.transaction);
 
     const event = payload?.event;
     const buyerEmail = payload?.data?.buyer?.email;
@@ -123,24 +118,24 @@ app.post("/webhooks/hotmart", async (req, res) => {
 
     // 3) Idempotência para eventos que criam acesso
     if (event === "PURCHASE_APPROVED") {
-		  if (processedTransactions.has(transaction)) {
-		    console.log(`Duplicate PURCHASE_APPROVED skipped: ${transaction}`);
-		    return res.status(200).send("OK");
-		  }
-		
-		  const password = genPassword();
-		
-		  await heyzineAccessAdd({
-		    name: mapped.name,
-		    user: buyerEmail,
-		    password,
-		  });
-		
-		  processedTransactions.add(transaction);
-		
-		  console.log(`Access granted: ${buyerEmail} -> ${mapped.name} (${transaction})`);
-		  return res.status(200).send("OK");
-		}
+	  if (!ALLOW_DUPLICATE_TESTS && processedTransactions.has(transaction)) {
+	    console.log(`Duplicate PURCHASE_APPROVED skipped: ${transaction}`);
+	    return res.status(200).send("OK");
+	  }
+	
+	  const password = genPassword();
+	
+	  await heyzineAccessAdd({
+	    name: mapped.name,
+	    user: buyerEmail,
+	    password,
+	  });
+	
+	  processedTransactions.add(transaction);
+	
+	  console.log(`Access granted: ${buyerEmail} -> ${mapped.name} (${transaction})`);
+	  return res.status(200).send("OK");
+	}
 
 
     // 4) Eventos que revogam acesso
