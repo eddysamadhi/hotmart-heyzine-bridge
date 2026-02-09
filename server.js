@@ -6,7 +6,7 @@ app.use(express.json({ limit: "1mb" }));
 
 // ====== CONFIG (Railway env vars) ======
 // 1) Um segredo que só você conhece (protege o endpoint)
-const WEBHOOK_SECRET = process.env.HOTMART_WEBHOOK_SECRET;
+const HOTMART_HOTTOK = process.env.HOTMART_HOTTOK;
 
 // 2) API Key da Heyzine (Bearer)
 const HEYZINE_API_KEY = process.env.HEYZINE_API_KEY;
@@ -87,8 +87,9 @@ app.get("/", (req, res) => res.status(200).send("OK"));
 app.post("/webhooks/hotmart", async (req, res) => {
   try {
     // 1) Segurança: rejeitar se segredo não bater
-    const incomingSecret = req.header("x-hotmart-secret");
-    if (!WEBHOOK_SECRET || incomingSecret !== WEBHOOK_SECRET) {
+    const incomingHottok = req.header("x-hotmart-hottok") || req.header("X-HOTMART-HOTTOK");
+
+    if (!HOTMART_HOTTOK || incomingHottok !== HOTMART_HOTTOK) {
       return res.status(401).send("Unauthorized");
     }
 
