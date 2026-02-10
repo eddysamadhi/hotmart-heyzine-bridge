@@ -59,9 +59,7 @@ function genPassword() {
 
 function pickProductKey(payload) {
   const pid = payload?.data?.product?.id;
-  const ucode = payload?.data?.product?.ucode;
   if (pid && pid !== 0) return String(pid);
-  if (ucode) return String(ucode);
   return null;
 }
 
