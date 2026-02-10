@@ -1,11 +1,17 @@
 import express from "express";
 import crypto from "crypto";
-import { Resend } from "resend";
+import sgMail from "@sendgrid/mail";
 
 const app = express();
 app.use(express.json({ limit: "1mb" }));
 
 // ====== CONFIG (Railway env vars) ======
+
+const SENDGRID_API_KEY = process.env.SENDGRID_API_KEY;
+const EMAIL_FROM = process.env.EMAIL_FROM; // ex: contato@eddysamadhi.com
+const SUPPORT_EMAIL = process.env.SUPPORT_EMAIL || EMAIL_FROM;
+
+if (SENDGRID_API_KEY) sgMail.setApiKey(SENDGRID_API_KEY);
 
 
 // 1) Um segredo que só você conhece (protege o endpoint)
@@ -161,7 +167,19 @@ app.post("/webhooks/hotmart", async (req, res) => {
 	  return res.status(200).send("OK");
 	}
 
+try {
+  const r = await sendAccessEmail({
+    to: buyerEmail,
+    bookTitle: mapped.title || "Seu livro",
+    flipbookUrl: mapped.url,
+    password,
+  });
+  console.log("Email sent:", r);
+} catch (e) {
+  console.error("Email send failed:", e?.message || e);
+}
 
+	  
     // 4) Eventos que revogam acesso
     if (
       event === "PURCHASE_REFUNDED" ||
@@ -184,6 +202,50 @@ app.post("/webhooks/hotmart", async (req, res) => {
     // Retornar 200 evita reenvios em loop; mas em fase de teste, você pode preferir 500.
     return res.status(200).send("OK");
   }
+
+  async function sendAccessEmail({ to, bookTitle, flipbookUrl, password }) {
+    if (!SENDGRID_API_KEY) throw new Error("Missing SENDGRID_API_KEY");
+    if (!EMAIL_FROM) throw new Error("Missing EMAIL_FROM");
+
+    const subject = `Acesso liberado: ${bookTitle}`;
+
+  const text = `Seu acesso foi liberado ✅
+
+Livro: ${bookTitle}
+Link: ${flipbookUrl}
+
+Login: ${to}
+Senha: ${password}
+
+Suporte: ${SUPPORT_EMAIL}
+`;
+
+  const html = `
+  <div style="font-family: Arial, sans-serif; line-height: 1.5">
+    <h2>Seu acesso foi liberado ✅</h2>
+    <p><strong>Livro:</strong> ${bookTitle}</p>
+    <p><strong>Link do flipbook:</strong><br/>
+      <a href="${flipbookUrl}">${flipbookUrl}</a>
+    </p>
+    <p><strong>Login:</strong> ${to}<br/>
+       <strong>Senha:</strong> ${password}</p>
+    <p style="margin-top:16px">
+      Se houver qualquer problema, responda este e-mail ou fale com: ${SUPPORT_EMAIL}.
+    </p>
+  </div>`;
+
+  const msg = {
+    to,
+    from: EMAIL_FROM,
+    subject,
+    text,
+    html,
+  };
+
+  const [resp] = await sgMail.send(msg);
+  return { statusCode: resp.statusCode };
+}
+
 });
 
 const PORT = process.env.PORT || 3000;
