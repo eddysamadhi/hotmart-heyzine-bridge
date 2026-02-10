@@ -1,7 +1,7 @@
 import express from "express";
 import crypto from "crypto";
 import sgMail from "@sendgrid/mail";
-import fetch from "node-fetch"; // ✅ garante fetch mesmo se Node < 18
+import fetch from "node-fetch"; // garante fetch mesmo se Node < 18
 
 const app = express();
 app.use(express.json({ limit: "1mb" }));
@@ -22,8 +22,21 @@ const HOTMART_HOTTOK = process.env.HOTMART_HOTTOK;
 // 2) API Key da Heyzine (Bearer)
 const HEYZINE_API_KEY = process.env.HEYZINE_API_KEY;
 
-// 3) Mapa Hotmart -> Heyzine (ajuste com seus dados reais)
+// ✅ Modo "descoberta de ucode" (SAFE: não cria acesso, não remove, não envia email ao comprador)
+const HOTMART_DISCOVER_UCODE = process.env.HOTMART_DISCOVER_UCODE === "true";
+
+// (Opcional) limitar a descoberta a certos eventos (para evitar spam)
+const DISCOVER_ONLY_EVENTS = new Set([
+  "PURCHASE_APPROVED",
+  // "PURCHASE_COMPLETE",
+  // "PURCHASE_DELAYED",
+]);
+
+// 3) Mapa Hotmart -> Heyzine
+// ✅ PRODUÇÃO: use ucode como chave (product.ucode).
+// ✅ TRANSIÇÃO: pode manter ids como fallback (product.id) enquanto descobre ucodes.
 const PRODUCT_MAP = {
+  // Exemplos com ID (fallback temporário — remova quando tiver ucode):
   "7040305": {
     name: "149c95dbe08200def69527e27e4de9552dfa17f9.pdf",
     title:
@@ -47,6 +60,9 @@ const PRODUCT_MAP = {
       "Crônicas de Luthera - Avartrax | versão colorida e estendida | leitura online Premium",
     url: "https://heyzine.com/flip-book/803ad25bde.html",
   },
+
+  // Exemplos (quando você descobrir, substitua por ucode e remova os ids):
+  // "UCODE-XXXX": { ... }
 };
 
 // ✅ Correção: true significa "permitir duplicados"
@@ -62,9 +78,24 @@ function genPassword() {
   return crypto.randomBytes(9).toString("base64url");
 }
 
+function extractProductIdentifiers(payload) {
+  const product = payload?.data?.product || {};
+  return {
+    ucode: product?.ucode ? String(product.ucode) : null,
+    id: product?.id != null ? String(product.id) : null,
+    name: product?.name || product?.title || null,
+  };
+}
+
+// ✅ PRODUÇÃO: a doc recomenda product.ucode como chave.
+// ✅ TRANSIÇÃO: mantém fallback para product.id até você mapear todos os ucodes.
 function pickProductKey(payload) {
+  const ucode = payload?.data?.product?.ucode;
+  if (ucode) return String(ucode);
+
   const pid = payload?.data?.product?.id;
   if (pid && pid !== 0) return String(pid);
+
   return null;
 }
 
@@ -242,7 +273,6 @@ app.get("/", (req, res) => res.status(200).send("OK"));
 
 // ====== Webhook Hotmart ======
 app.post("/webhooks/hotmart", async (req, res) => {
-  // ⚠️ Regra: responda rápido; mas aqui mantemos simples e robusto.
   const receivedAt = new Date().toISOString();
 
   try {
@@ -256,20 +286,64 @@ app.post("/webhooks/hotmart", async (req, res) => {
     const payload = req.body;
 
     const event = payload?.event;
-    const buyerEmail = payload?.data?.buyer?.email;
-    const transaction = payload?.data?.purchase?.transaction;
+    const buyerEmail = payload?.data?.buyer?.email || "(no buyer email)";
+    const transaction = payload?.data?.purchase?.transaction || "(no transaction)";
+
+    // Log base (não despeja payload inteiro)
+    console.log(">>> webhook", receivedAt, event, transaction);
+
+    // ✅ MODO DESCOBERTA DE UCODE (SAFE)
+    // - Não cria acesso
+    // - Não remove acesso
+    // - Não envia email ao comprador
+    // - Apenas registra ucode/id do produto (log + auditoria opcional)
+    if (HOTMART_DISCOVER_UCODE) {
+      if (event && DISCOVER_ONLY_EVENTS.size > 0 && !DISCOVER_ONLY_EVENTS.has(event)) {
+        console.log("[DISCOVER_UCODE] Ignorado por evento:", event);
+        return res.status(200).send("OK");
+      }
+
+      const productIds = extractProductIdentifiers(payload);
+
+      console.log("[DISCOVER_UCODE] Capturado:", {
+        event,
+        transaction,
+        buyerEmail,
+        product: productIds,
+      });
+
+      // Auditoria opcional
+      try {
+        await sendAuditEmail({
+          event: `DISCOVER_UCODE:${event || "UNKNOWN"}`,
+          buyerEmail,
+          productTitle: productIds?.name || "(no product name)",
+          transaction,
+          password: "(n/a)",
+          heyzineResult: { info: "Modo descoberta ativo: nenhuma ação Heyzine executada" },
+          emailResult: { info: "Modo descoberta ativo: nenhum e-mail enviado ao comprador" },
+          extra: { receivedAt, product: productIds },
+        });
+      } catch (e) {
+        console.error("[DISCOVER_UCODE] Falha ao enviar auditoria:", e?.message || e);
+      }
+
+      return res.status(200).send("OK");
+    }
+
+    // 2) Validação mínima (modo produção normal)
     const productKey = pickProductKey(payload);
 
-    console.log(">>> webhook", receivedAt, event, transaction, productKey);
+    console.log(">>> productKey", productKey);
 
-    // 2) Validação mínima
-    if (!event || !buyerEmail || !transaction || !productKey) {
+    if (!event || !transaction || !productKey) {
       return res.status(400).send("Missing required fields");
     }
 
     const mapped = PRODUCT_MAP[productKey];
     if (!mapped) {
       console.log("Unmapped productKey:", productKey);
+      // Não falha webhook — apenas ignora
       return res.status(200).send("OK");
     }
 
@@ -296,7 +370,6 @@ app.post("/webhooks/hotmart", async (req, res) => {
       } catch (e) {
         console.error("Heyzine access-add failed:", e?.message || e);
 
-        // auditoria opcional
         await sendAuditEmail({
           event,
           buyerEmail,
@@ -305,7 +378,7 @@ app.post("/webhooks/hotmart", async (req, res) => {
           password,
           heyzineResult: { error: e?.message || String(e) },
           emailResult: { info: "não enviado (heyzine falhou)" },
-          extra: { idempotencyKey, receivedAt },
+          extra: { idempotencyKey, receivedAt, productKey },
         }).catch(() => {});
 
         return res.status(500).send("Heyzine error");
@@ -337,10 +410,12 @@ app.post("/webhooks/hotmart", async (req, res) => {
         password,
         heyzineResult,
         emailResult,
-        extra: { idempotencyKey, receivedAt },
+        extra: { idempotencyKey, receivedAt, productKey },
       }).catch(() => {});
 
-      console.log(`Access granted: ${buyerEmail} -> ${mapped.name} (${transaction})`);
+      console.log(
+        `Access granted: ${buyerEmail} -> ${mapped.name} (${transaction})`
+      );
       return res.status(200).send("OK");
     }
 
@@ -368,7 +443,7 @@ app.post("/webhooks/hotmart", async (req, res) => {
           password: "(n/a)",
           heyzineResult: { error: e?.message || String(e) },
           emailResult: { info: "revogação falhou (heyzine)" },
-          extra: { idempotencyKey, receivedAt },
+          extra: { idempotencyKey, receivedAt, productKey },
         }).catch(() => {});
 
         return res.status(500).send("Heyzine error");
@@ -384,10 +459,12 @@ app.post("/webhooks/hotmart", async (req, res) => {
         password: "(n/a)",
         heyzineResult: revokeResult,
         emailResult: { info: "revogação de acesso (sem envio ao comprador)" },
-        extra: { idempotencyKey, receivedAt },
+        extra: { idempotencyKey, receivedAt, productKey },
       }).catch(() => {});
 
-      console.log(`Access revoked: ${buyerEmail} -> ${mapped.name} (${transaction})`);
+      console.log(
+        `Access revoked: ${buyerEmail} -> ${mapped.name} (${transaction})`
+      );
       return res.status(200).send("OK");
     }
 
@@ -395,7 +472,7 @@ app.post("/webhooks/hotmart", async (req, res) => {
     return res.status(200).send("OK");
   } catch (err) {
     console.error("Webhook fatal error:", err);
-    // Aqui eu prefiro 500: é um erro inesperado e o retry ajuda.
+    // Preferível 500 para permitir retry em erro inesperado
     return res.status(500).send("Internal error");
   }
 });
