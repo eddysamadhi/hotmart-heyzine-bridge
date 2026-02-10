@@ -45,7 +45,7 @@ const PRODUCT_MAP = {
   },
 };
 
-const ALLOW_DUPLICATE_TESTS = process.env.ALLOW_DUPLICATE_TESTS === "true";
+const ALLOW_DUPLICATE_TESTS = process.env.ALLOW_DUPLICATE_TESTS === "false";
 
 // ====== Idempotência simples (memória) ======
 // Em produção “forte”, use banco. Para começar, isso já evita duplicar em replays rápidos.
