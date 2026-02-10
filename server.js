@@ -1,7 +1,6 @@
 import express from "express";
 import crypto from "crypto";
 import sgMail from "@sendgrid/mail";
-import fetch from "node-fetch"; // garante fetch mesmo se Node < 18
 
 const app = express();
 app.use(express.json({ limit: "1mb" }));
