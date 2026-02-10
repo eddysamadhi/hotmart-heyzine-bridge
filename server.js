@@ -10,6 +10,9 @@ const SENDGRID_API_KEY = process.env.SENDGRID_API_KEY;
 const EMAIL_FROM = process.env.EMAIL_FROM; // ex: contato@eddysamadhi.com
 const SUPPORT_EMAIL = process.env.SUPPORT_EMAIL || EMAIL_FROM;
 
+// ✅ Auditoria (opcional): se setado, envia relatório do processamento
+const EMAIL_AUDITORIA = process.env.EMAIL_AUDITORIA;
+
 if (SENDGRID_API_KEY) sgMail.setApiKey(SENDGRID_API_KEY);
 
 // 1) Um segredo que só você conhece (protege o endpoint)
@@ -78,7 +81,9 @@ async function heyzineAccessAdd({ name, user, password }) {
 
   // 2) erro lógico (success:false)
   if (data?.success === false) {
-    throw new Error(`Heyzine access-add failed (logical): ${JSON.stringify(data)}`);
+    throw new Error(
+      `Heyzine access-add failed (logical): ${JSON.stringify(data)}`
+    );
   }
 
   return data;
@@ -156,6 +161,49 @@ Suporte: ${SUPPORT_EMAIL}
   return { statusCode: resp.statusCode };
 }
 
+// ✅ Email de auditoria (condicional via env var EMAIL_AUDITORIA)
+async function sendAuditEmail({
+  event,
+  buyerEmail,
+  productTitle,
+  transaction,
+  password,
+  heyzineResult,
+  emailResult,
+}) {
+  if (!EMAIL_AUDITORIA) return;
+  if (!SENDGRID_API_KEY || !EMAIL_FROM) return;
+
+  const subject = `🧪 Webhook Hotmart — ${event} — ${transaction}`;
+
+  const text = `Resultado do processamento do webhook
+
+Evento: ${event}
+Transação: ${transaction}
+
+Produto: ${productTitle}
+Comprador (buyer): ${buyerEmail}
+
+Senha gerada:
+${password}
+
+Resultado Heyzine:
+${JSON.stringify(heyzineResult, null, 2)}
+
+Resultado Email comprador:
+${JSON.stringify(emailResult, null, 2)}
+`;
+
+  const msg = {
+    to: EMAIL_AUDITORIA,
+    from: EMAIL_FROM,
+    subject,
+    text,
+  };
+
+  await sgMail.send(msg);
+}
+
 // ====== Healthcheck ======
 app.get("/", (req, res) => res.status(200).send("OK"));
 
@@ -205,28 +253,46 @@ app.post("/webhooks/hotmart", async (req, res) => {
 
       const password = genPassword();
 
-      const result = await heyzineAccessAdd({
+      const heyzineResult = await heyzineAccessAdd({
         name: mapped.name,
         user: buyerEmail,
         password,
       });
-      console.log("Heyzine access-add result:", result);
+      console.log("Heyzine access-add result:", heyzineResult);
 
       processedTransactions.add(transaction);
 
-      // Envio do email (no lugar certo, com password no escopo)
+      // Envio do email (ao comprador)
+      let emailResult = null;
       try {
-        const r = await sendAccessEmail({
+        emailResult = await sendAccessEmail({
           to: buyerEmail,
           bookTitle: mapped.title || "Seu livro",
           flipbookUrl: mapped.url,
           password,
         });
-        console.log("Email sent:", r);
+        console.log("Email sent:", emailResult);
       } catch (e) {
+        emailResult = { error: e?.message || String(e) };
         console.error("Email send failed:", e?.message || e);
         // Se quiser permitir reenvio em caso de falha de email:
         // processedTransactions.delete(transaction);
+      }
+
+      // ✅ Auditoria (se EMAIL_AUDITORIA estiver setado)
+      try {
+        await sendAuditEmail({
+          event,
+          buyerEmail,
+          productTitle: mapped.title || mapped.name,
+          transaction,
+          password,
+          heyzineResult,
+          emailResult,
+        });
+        console.log("Audit email sent to:", EMAIL_AUDITORIA);
+      } catch (e) {
+        console.error("Audit email failed:", e?.message || e);
       }
 
       console.log(
@@ -241,10 +307,28 @@ app.post("/webhooks/hotmart", async (req, res) => {
       event === "CHARGEBACK" ||
       event === "PURCHASE_CANCELED"
     ) {
-      await heyzineAccessRemove({
+      const revokeResult = await heyzineAccessRemove({
         name: mapped.name,
         user: buyerEmail,
       });
+
+      console.log("Heyzine access-remove result:", revokeResult);
+
+      // (Opcional) Auditoria também para revogação
+      try {
+        await sendAuditEmail({
+          event,
+          buyerEmail,
+          productTitle: mapped.title || mapped.name,
+          transaction,
+          password: "(n/a)",
+          heyzineResult: revokeResult,
+          emailResult: { info: "revogação de acesso (sem envio ao comprador)" },
+        });
+        console.log("Audit email sent to:", EMAIL_AUDITORIA);
+      } catch (e) {
+        console.error("Audit email failed:", e?.message || e);
+      }
 
       console.log(
         `Access revoked: ${buyerEmail} -> ${mapped.name} (${transaction})`
