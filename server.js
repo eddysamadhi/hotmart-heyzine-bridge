@@ -1,6 +1,7 @@
 import express from "express";
 import crypto from "crypto";
 import sgMail from "@sendgrid/mail";
+import fetch from "node-fetch"; // ✅ garante fetch mesmo se Node < 18
 
 const app = express();
 app.use(express.json({ limit: "1mb" }));
@@ -23,33 +24,37 @@ const HEYZINE_API_KEY = process.env.HEYZINE_API_KEY;
 
 // 3) Mapa Hotmart -> Heyzine (ajuste com seus dados reais)
 const PRODUCT_MAP = {
-    "7040305": {
+  "7040305": {
     name: "149c95dbe08200def69527e27e4de9552dfa17f9.pdf",
-    title: "Crônicas de Luthera - Gellian | versão colorida e estendida | leitura online Premium",
+    title:
+      "Crônicas de Luthera - Gellian | versão colorida e estendida | leitura online Premium",
     url: "https://heyzine.com/flip-book/149c95dbe0.html",
   },
-    "7062283": {
+  "7062283": {
     name: "df5dc91fb87d2f5156abb23526e79c6a7692b147.pdf",
     title: "Crônicas de Luthera - Udhar | Leitura online Premium",
     url: "https://heyzine.com/flip-book/df5dc91fb8.html",
   },
-    "7184211": {
+  "7184211": {
     name: "64d61a857998bd6c8c18b2bb2620d1dce75ed067.pdf",
-    title: "Crônicas de Luthera - Os Paladinos de Aterom | versão colorida e estendida | leitura online Premium",
+    title:
+      "Crônicas de Luthera - Os Paladinos de Aterom | versão colorida e estendida | leitura online Premium",
     url: "https://heyzine.com/flip-book/64d61a8579.html",
   },
-    "6978497": {
+  "6978497": {
     name: "803ad25bde64f1abc27b33c30a6d43a881b5bb52.pdf",
-    title: "Crônicas de Luthera - Avartrax | versão colorida e estendida | leitura online Premium",
+    title:
+      "Crônicas de Luthera - Avartrax | versão colorida e estendida | leitura online Premium",
     url: "https://heyzine.com/flip-book/803ad25bde.html",
   },
 };
 
-const ALLOW_DUPLICATE_TESTS = process.env.ALLOW_DUPLICATE_TESTS === "false";
+// ✅ Correção: true significa "permitir duplicados"
+const ALLOW_DUPLICATE_TESTS = process.env.ALLOW_DUPLICATE_TESTS === "true";
 
 // ====== Idempotência simples (memória) ======
-// Em produção “forte”, use banco. Para começar, isso já evita duplicar em replays rápidos.
-const processedTransactions = new Set();
+// Em produção “forte”, use banco (Redis/Postgres). Isso aqui evita duplicar em replays rápidos.
+const processedEvents = new Set();
 
 // ====== Utils ======
 function genPassword() {
@@ -63,7 +68,31 @@ function pickProductKey(payload) {
   return null;
 }
 
+function getHotmartHottok(req) {
+  // Express trata headers de forma case-insensitive
+  return req.get("X-HOTMART-HOTTOK") || req.get("x-hotmart-hottok");
+}
+
+function isApprovalEvent(event) {
+  // Hotmart v2 tipicamente usa PURCHASE_*
+  return event === "PURCHASE_APPROVED" || event === "PURCHASE_COMPLETE";
+}
+
+function isRevokeEvent(event) {
+  // aceitar tanto família PURCHASE_* quanto nomes curtos (compat)
+  return (
+    event === "PURCHASE_REFUNDED" ||
+    event === "PURCHASE_CANCELED" ||
+    event === "PURCHASE_CHARGEBACK" ||
+    event === "REFUNDED" ||
+    event === "CANCELED" ||
+    event === "CHARGEBACK"
+  );
+}
+
 async function heyzineAccessAdd({ name, user, password }) {
+  if (!HEYZINE_API_KEY) throw new Error("Missing HEYZINE_API_KEY");
+
   const res = await fetch("https://heyzine.com/api1/access-add", {
     method: "POST",
     headers: {
@@ -80,14 +109,12 @@ async function heyzineAccessAdd({ name, user, password }) {
 
   const data = await res.json().catch(async () => ({ raw: await res.text() }));
 
-  // 1) erro HTTP
   if (!res.ok) {
     throw new Error(
       `Heyzine access-add failed (${res.status}): ${JSON.stringify(data)}`
     );
   }
 
-  // 2) erro lógico (success:false)
   if (data?.success === false) {
     throw new Error(
       `Heyzine access-add failed (logical): ${JSON.stringify(data)}`
@@ -98,6 +125,8 @@ async function heyzineAccessAdd({ name, user, password }) {
 }
 
 async function heyzineAccessRemove({ name, user }) {
+  if (!HEYZINE_API_KEY) throw new Error("Missing HEYZINE_API_KEY");
+
   const res = await fetch("https://heyzine.com/api1/access-remove", {
     method: "POST",
     headers: {
@@ -109,14 +138,12 @@ async function heyzineAccessRemove({ name, user }) {
 
   const data = await res.json().catch(async () => ({ raw: await res.text() }));
 
-  // 1) erro HTTP
   if (!res.ok) {
     throw new Error(
       `Heyzine access-remove failed (${res.status}): ${JSON.stringify(data)}`
     );
   }
 
-  // 2) erro lógico (HTTP 200 mas success:false)
   if (data?.success === false) {
     throw new Error(
       `Heyzine access-remove failed (logical): ${JSON.stringify(data)}`
@@ -157,13 +184,7 @@ Suporte: ${SUPPORT_EMAIL}
     </p>
   </div>`;
 
-  const msg = {
-    to,
-    from: EMAIL_FROM,
-    subject,
-    text,
-    html,
-  };
+  const msg = { to, from: EMAIL_FROM, subject, text, html };
 
   const [resp] = await sgMail.send(msg);
   return { statusCode: resp.statusCode };
@@ -178,6 +199,7 @@ async function sendAuditEmail({
   password,
   heyzineResult,
   emailResult,
+  extra,
 }) {
   if (!EMAIL_AUDITORIA) return;
   if (!SENDGRID_API_KEY || !EMAIL_FROM) return;
@@ -192,7 +214,7 @@ Transação: ${transaction}
 Produto: ${productTitle}
 Comprador (buyer): ${buyerEmail}
 
-Senha gerada:
+Senha:
 ${password}
 
 Resultado Heyzine:
@@ -200,6 +222,9 @@ ${JSON.stringify(heyzineResult, null, 2)}
 
 Resultado Email comprador:
 ${JSON.stringify(emailResult, null, 2)}
+
+Extra:
+${extra ? JSON.stringify(extra, null, 2) : "(n/a)"}
 `;
 
   const msg = {
@@ -217,27 +242,25 @@ app.get("/", (req, res) => res.status(200).send("OK"));
 
 // ====== Webhook Hotmart ======
 app.post("/webhooks/hotmart", async (req, res) => {
+  // ⚠️ Regra: responda rápido; mas aqui mantemos simples e robusto.
+  const receivedAt = new Date().toISOString();
+
   try {
     // 1) Segurança: rejeitar se segredo não bater
-    const incomingHottok =
-      req.header("x-hotmart-hottok") || req.header("X-HOTMART-HOTTOK");
+    const incomingHottok = getHotmartHottok(req);
 
     if (!HOTMART_HOTTOK || incomingHottok !== HOTMART_HOTTOK) {
       return res.status(401).send("Unauthorized");
     }
 
     const payload = req.body;
-    console.log(
-      ">>> webhook",
-      new Date().toISOString(),
-      payload?.event,
-      payload?.data?.purchase?.transaction
-    );
 
     const event = payload?.event;
     const buyerEmail = payload?.data?.buyer?.email;
     const transaction = payload?.data?.purchase?.transaction;
     const productKey = pickProductKey(payload);
+
+    console.log(">>> webhook", receivedAt, event, transaction, productKey);
 
     // 2) Validação mínima
     if (!event || !buyerEmail || !transaction || !productKey) {
@@ -246,31 +269,51 @@ app.post("/webhooks/hotmart", async (req, res) => {
 
     const mapped = PRODUCT_MAP[productKey];
     if (!mapped) {
-      // Não falhe o webhook: apenas ignore (ou logue) produtos não mapeados
       console.log("Unmapped productKey:", productKey);
       return res.status(200).send("OK");
     }
 
+    // ✅ Idempotência por evento + transação
+    const idempotencyKey = `${event}:${transaction}`;
+
     // 3) Eventos que criam acesso
-    if (event === "PURCHASE_APPROVED") {
-      // Idempotência para replays rápidos
-      if (!ALLOW_DUPLICATE_TESTS && processedTransactions.has(transaction)) {
-        console.log(`Duplicate PURCHASE_APPROVED skipped: ${transaction}`);
+    if (isApprovalEvent(event)) {
+      if (!ALLOW_DUPLICATE_TESTS && processedEvents.has(idempotencyKey)) {
+        console.log(`Duplicate approval skipped: ${idempotencyKey}`);
         return res.status(200).send("OK");
       }
 
       const password = genPassword();
 
-      const heyzineResult = await heyzineAccessAdd({
-        name: mapped.name,
-        user: buyerEmail,
-        password,
-      });
-      console.log("Heyzine access-add result:", heyzineResult);
+      // Se Heyzine falhar, retornamos 500 para permitir retry do webhook
+      let heyzineResult;
+      try {
+        heyzineResult = await heyzineAccessAdd({
+          name: mapped.name,
+          user: buyerEmail,
+          password,
+        });
+      } catch (e) {
+        console.error("Heyzine access-add failed:", e?.message || e);
 
-      processedTransactions.add(transaction);
+        // auditoria opcional
+        await sendAuditEmail({
+          event,
+          buyerEmail,
+          productTitle: mapped.title || mapped.name,
+          transaction,
+          password,
+          heyzineResult: { error: e?.message || String(e) },
+          emailResult: { info: "não enviado (heyzine falhou)" },
+          extra: { idempotencyKey, receivedAt },
+        }).catch(() => {});
 
-      // Envio do email (ao comprador)
+        return res.status(500).send("Heyzine error");
+      }
+
+      processedEvents.add(idempotencyKey);
+
+      // Envio do email (ao comprador) — se falhar, não derruba o webhook
       let emailResult = null;
       try {
         emailResult = await sendAccessEmail({
@@ -283,73 +326,77 @@ app.post("/webhooks/hotmart", async (req, res) => {
       } catch (e) {
         emailResult = { error: e?.message || String(e) };
         console.error("Email send failed:", e?.message || e);
-        // Se quiser permitir reenvio em caso de falha de email:
-        // processedTransactions.delete(transaction);
       }
 
-      // ✅ Auditoria (se EMAIL_AUDITORIA estiver setado)
-      try {
-        await sendAuditEmail({
-          event,
-          buyerEmail,
-          productTitle: mapped.title || mapped.name,
-          transaction,
-          password,
-          heyzineResult,
-          emailResult,
-        });
-        console.log("Audit email sent to:", EMAIL_AUDITORIA);
-      } catch (e) {
-        console.error("Audit email failed:", e?.message || e);
-      }
+      // Auditoria
+      await sendAuditEmail({
+        event,
+        buyerEmail,
+        productTitle: mapped.title || mapped.name,
+        transaction,
+        password,
+        heyzineResult,
+        emailResult,
+        extra: { idempotencyKey, receivedAt },
+      }).catch(() => {});
 
-      console.log(
-        `Access granted: ${buyerEmail} -> ${mapped.name} (${transaction})`
-      );
+      console.log(`Access granted: ${buyerEmail} -> ${mapped.name} (${transaction})`);
       return res.status(200).send("OK");
     }
 
     // 4) Eventos que revogam acesso
-    if (
-      event === "PURCHASE_REFUNDED" ||
-      event === "PURCHASE_CHARGEBACK" ||
-      event === "PURCHASE_CANCELED"
-    ) {
-      const revokeResult = await heyzineAccessRemove({
-        name: mapped.name,
-        user: buyerEmail,
-      });
+    if (isRevokeEvent(event)) {
+      if (!ALLOW_DUPLICATE_TESTS && processedEvents.has(idempotencyKey)) {
+        console.log(`Duplicate revoke skipped: ${idempotencyKey}`);
+        return res.status(200).send("OK");
+      }
 
-      console.log("Heyzine access-remove result:", revokeResult);
-
-      // (Opcional) Auditoria também para revogação
+      let revokeResult;
       try {
+        revokeResult = await heyzineAccessRemove({
+          name: mapped.name,
+          user: buyerEmail,
+        });
+      } catch (e) {
+        console.error("Heyzine access-remove failed:", e?.message || e);
+
         await sendAuditEmail({
           event,
           buyerEmail,
           productTitle: mapped.title || mapped.name,
           transaction,
           password: "(n/a)",
-          heyzineResult: revokeResult,
-          emailResult: { info: "revogação de acesso (sem envio ao comprador)" },
-        });
-        console.log("Audit email sent to:", EMAIL_AUDITORIA);
-      } catch (e) {
-        console.error("Audit email failed:", e?.message || e);
+          heyzineResult: { error: e?.message || String(e) },
+          emailResult: { info: "revogação falhou (heyzine)" },
+          extra: { idempotencyKey, receivedAt },
+        }).catch(() => {});
+
+        return res.status(500).send("Heyzine error");
       }
 
-      console.log(
-        `Access revoked: ${buyerEmail} -> ${mapped.name} (${transaction})`
-      );
+      processedEvents.add(idempotencyKey);
+
+      await sendAuditEmail({
+        event,
+        buyerEmail,
+        productTitle: mapped.title || mapped.name,
+        transaction,
+        password: "(n/a)",
+        heyzineResult: revokeResult,
+        emailResult: { info: "revogação de acesso (sem envio ao comprador)" },
+        extra: { idempotencyKey, receivedAt },
+      }).catch(() => {});
+
+      console.log(`Access revoked: ${buyerEmail} -> ${mapped.name} (${transaction})`);
       return res.status(200).send("OK");
     }
 
     // 5) Outros eventos: só aceita
     return res.status(200).send("OK");
   } catch (err) {
-    console.error(err);
-    // Retornar 200 evita reenvios em loop; mas em fase de teste, você pode preferir 500.
-    return res.status(200).send("OK");
+    console.error("Webhook fatal error:", err);
+    // Aqui eu prefiro 500: é um erro inesperado e o retry ajuda.
+    return res.status(500).send("Internal error");
   }
 });
 
