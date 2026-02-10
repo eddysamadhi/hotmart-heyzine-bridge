@@ -6,13 +6,11 @@ const app = express();
 app.use(express.json({ limit: "1mb" }));
 
 // ====== CONFIG (Railway env vars) ======
-
 const SENDGRID_API_KEY = process.env.SENDGRID_API_KEY;
 const EMAIL_FROM = process.env.EMAIL_FROM; // ex: contato@eddysamadhi.com
 const SUPPORT_EMAIL = process.env.SUPPORT_EMAIL || EMAIL_FROM;
 
 if (SENDGRID_API_KEY) sgMail.setApiKey(SENDGRID_API_KEY);
-
 
 // 1) Um segredo que só você conhece (protege o endpoint)
 const HOTMART_HOTTOK = process.env.HOTMART_HOTTOK;
@@ -22,13 +20,16 @@ const HEYZINE_API_KEY = process.env.HEYZINE_API_KEY;
 
 // 3) Mapa Hotmart -> Heyzine (ajuste com seus dados reais)
 const PRODUCT_MAP = {
-  "4774438": { name: "df5dc91fb87d2f5156abb23526e79c6a7692b147.pdf",
-			  title: "Crônicas de Luthera - Udhar",
-			  url: "https://heyzine.com/flip-book/df5dc91fb8.html" },
-  "fb056612-bcc6-4217-9e6d-2a5d1110ac2f": { 
-	  name: "df5dc91fb87d2f5156abb23526e79c6a7692b147.pdf", 
-	  title: "Crônicas de Luthera - Udhar",
-	  url: "https://heyzine.com/flip-book/df5dc91fb8.html" },
+  "4774438": {
+    name: "df5dc91fb87d2f5156abb23526e79c6a7692b147.pdf",
+    title: "Crônicas de Luthera - Udhar",
+    url: "https://heyzine.com/flip-book/df5dc91fb8.html",
+  },
+  "fb056612-bcc6-4217-9e6d-2a5d1110ac2f": {
+    name: "df5dc91fb87d2f5156abb23526e79c6a7692b147.pdf",
+    title: "Crônicas de Luthera - Udhar",
+    url: "https://heyzine.com/flip-book/df5dc91fb8.html",
+  },
 };
 
 const ALLOW_DUPLICATE_TESTS = process.env.ALLOW_DUPLICATE_TESTS === "true";
@@ -70,7 +71,9 @@ async function heyzineAccessAdd({ name, user, password }) {
 
   // 1) erro HTTP
   if (!res.ok) {
-    throw new Error(`Heyzine access-add failed (${res.status}): ${JSON.stringify(data)}`);
+    throw new Error(
+      `Heyzine access-add failed (${res.status}): ${JSON.stringify(data)}`
+    );
   }
 
   // 2) erro lógico (success:false)
@@ -110,104 +113,11 @@ async function heyzineAccessRemove({ name, user }) {
   return data;
 }
 
+async function sendAccessEmail({ to, bookTitle, flipbookUrl, password }) {
+  if (!SENDGRID_API_KEY) throw new Error("Missing SENDGRID_API_KEY");
+  if (!EMAIL_FROM) throw new Error("Missing EMAIL_FROM");
 
-// ====== Healthcheck ======
-app.get("/", (req, res) => res.status(200).send("OK"));
-
-// ====== Webhook Hotmart ======
-app.post("/webhooks/hotmart", async (req, res) => {
-  try {
-    // 1) Segurança: rejeitar se segredo não bater
-    const incomingHottok = req.header("x-hotmart-hottok") || req.header("X-HOTMART-HOTTOK");
-
-    if (!HOTMART_HOTTOK || incomingHottok !== HOTMART_HOTTOK) {
-      return res.status(401).send("Unauthorized");
-    }
-
-    const payload = req.body;
-	console.log(">>> webhook", new Date().toISOString(), payload?.event, payload?.data?.purchase?.transaction);
-
-    const event = payload?.event;
-    const buyerEmail = payload?.data?.buyer?.email;
-    const transaction = payload?.data?.purchase?.transaction;
-    const productKey = pickProductKey(payload);
-
-    // 2) Validação mínima
-    if (!event || !buyerEmail || !transaction || !productKey) {
-      return res.status(400).send("Missing required fields");
-    }
-
-    const mapped = PRODUCT_MAP[productKey];
-    if (!mapped) {
-      // Não falhe o webhook: apenas ignore (ou logue) produtos não mapeados
-      console.log("Unmapped productKey:", productKey);
-      return res.status(200).send("OK");
-    }
-
-    // 3) Idempotência para eventos que criam acesso
-    if (event === "PURCHASE_APPROVED") {
-	  if (!ALLOW_DUPLICATE_TESTS && processedTransactions.has(transaction)) {
-	    console.log(`Duplicate PURCHASE_APPROVED skipped: ${transaction}`);
-	    return res.status(200).send("OK");
-	  }
-	
-	  const password = genPassword();
-	
-	 const result = await heyzineAccessAdd({
-		  name: mapped.name,
-		  user: buyerEmail,
-		  password,
-		});
-		console.log("Heyzine access-add result:", result);
-
-	
-	  processedTransactions.add(transaction);
-	
-	  console.log(`Access granted: ${buyerEmail} -> ${mapped.name} (${transaction})`);
-	  return res.status(200).send("OK");
-	}
-
-try {
-  const r = await sendAccessEmail({
-    to: buyerEmail,
-    bookTitle: mapped.title || "Seu livro",
-    flipbookUrl: mapped.url,
-    password,
-  });
-  console.log("Email sent:", r);
-} catch (e) {
-  console.error("Email send failed:", e?.message || e);
-}
-
-	  
-    // 4) Eventos que revogam acesso
-    if (
-      event === "PURCHASE_REFUNDED" ||
-      event === "CHARGEBACK" ||
-      event === "PURCHASE_CANCELED"
-    ) {
-      await heyzineAccessRemove({
-        name: mapped.name,
-        user: buyerEmail,
-      });
-
-      console.log(`Access revoked: ${buyerEmail} -> ${mapped.name} (${transaction})`);
-      return res.status(200).send("OK");
-    }
-
-    // 5) Outros eventos: só aceita
-    return res.status(200).send("OK");
-  } catch (err) {
-    console.error(err);
-    // Retornar 200 evita reenvios em loop; mas em fase de teste, você pode preferir 500.
-    return res.status(200).send("OK");
-  }
-
-  async function sendAccessEmail({ to, bookTitle, flipbookUrl, password }) {
-    if (!SENDGRID_API_KEY) throw new Error("Missing SENDGRID_API_KEY");
-    if (!EMAIL_FROM) throw new Error("Missing EMAIL_FROM");
-
-    const subject = `Acesso liberado: ${bookTitle}`;
+  const subject = `Acesso liberado: ${bookTitle}`;
 
   const text = `Seu acesso foi liberado ✅
 
@@ -246,6 +156,109 @@ Suporte: ${SUPPORT_EMAIL}
   return { statusCode: resp.statusCode };
 }
 
+// ====== Healthcheck ======
+app.get("/", (req, res) => res.status(200).send("OK"));
+
+// ====== Webhook Hotmart ======
+app.post("/webhooks/hotmart", async (req, res) => {
+  try {
+    // 1) Segurança: rejeitar se segredo não bater
+    const incomingHottok =
+      req.header("x-hotmart-hottok") || req.header("X-HOTMART-HOTTOK");
+
+    if (!HOTMART_HOTTOK || incomingHottok !== HOTMART_HOTTOK) {
+      return res.status(401).send("Unauthorized");
+    }
+
+    const payload = req.body;
+    console.log(
+      ">>> webhook",
+      new Date().toISOString(),
+      payload?.event,
+      payload?.data?.purchase?.transaction
+    );
+
+    const event = payload?.event;
+    const buyerEmail = payload?.data?.buyer?.email;
+    const transaction = payload?.data?.purchase?.transaction;
+    const productKey = pickProductKey(payload);
+
+    // 2) Validação mínima
+    if (!event || !buyerEmail || !transaction || !productKey) {
+      return res.status(400).send("Missing required fields");
+    }
+
+    const mapped = PRODUCT_MAP[productKey];
+    if (!mapped) {
+      // Não falhe o webhook: apenas ignore (ou logue) produtos não mapeados
+      console.log("Unmapped productKey:", productKey);
+      return res.status(200).send("OK");
+    }
+
+    // 3) Eventos que criam acesso
+    if (event === "PURCHASE_APPROVED") {
+      // Idempotência para replays rápidos
+      if (!ALLOW_DUPLICATE_TESTS && processedTransactions.has(transaction)) {
+        console.log(`Duplicate PURCHASE_APPROVED skipped: ${transaction}`);
+        return res.status(200).send("OK");
+      }
+
+      const password = genPassword();
+
+      const result = await heyzineAccessAdd({
+        name: mapped.name,
+        user: buyerEmail,
+        password,
+      });
+      console.log("Heyzine access-add result:", result);
+
+      processedTransactions.add(transaction);
+
+      // Envio do email (no lugar certo, com password no escopo)
+      try {
+        const r = await sendAccessEmail({
+          to: buyerEmail,
+          bookTitle: mapped.title || "Seu livro",
+          flipbookUrl: mapped.url,
+          password,
+        });
+        console.log("Email sent:", r);
+      } catch (e) {
+        console.error("Email send failed:", e?.message || e);
+        // Se quiser permitir reenvio em caso de falha de email:
+        // processedTransactions.delete(transaction);
+      }
+
+      console.log(
+        `Access granted: ${buyerEmail} -> ${mapped.name} (${transaction})`
+      );
+      return res.status(200).send("OK");
+    }
+
+    // 4) Eventos que revogam acesso
+    if (
+      event === "PURCHASE_REFUNDED" ||
+      event === "CHARGEBACK" ||
+      event === "PURCHASE_CANCELED"
+    ) {
+      await heyzineAccessRemove({
+        name: mapped.name,
+        user: buyerEmail,
+      });
+
+      console.log(
+        `Access revoked: ${buyerEmail} -> ${mapped.name} (${transaction})`
+      );
+      return res.status(200).send("OK");
+    }
+
+    // 5) Outros eventos: só aceita
+    return res.status(200).send("OK");
+  } catch (err) {
+    console.error(err);
+    // Retornar 200 evita reenvios em loop; mas em fase de teste, você pode preferir 500.
+    return res.status(200).send("OK");
+  }
 });
 
 const PORT = process.env.PORT || 3000;
