@@ -312,7 +312,7 @@ app.post("/webhooks/hotmart", async (req, res) => {
     // 4) Eventos que revogam acesso
     if (
       event === "PURCHASE_REFUNDED" ||
-      event === "CHARGEBACK" ||
+      event === "PURCHASE_CHARGEBACK" ||
       event === "PURCHASE_CANCELED"
     ) {
       const revokeResult = await heyzineAccessRemove({
