@@ -8,6 +8,6 @@
   },
   "dependencies": {
     "express": "^4.19.2",
-    "resend": "^3.2.0"
+    "@sendgrid/mail": "^8.1.3"
   }
 }
