@@ -23,15 +23,25 @@ const HEYZINE_API_KEY = process.env.HEYZINE_API_KEY;
 
 // 3) Mapa Hotmart -> Heyzine (ajuste com seus dados reais)
 const PRODUCT_MAP = {
-  "4774438": {
+    "7040305": {
+    name: "149c95dbe08200def69527e27e4de9552dfa17f9.pdf",
+    title: "Crônicas de Luthera - Gellian | versão colorida e estendida | leitura online Premium",
+    url: "https://heyzine.com/flip-book/149c95dbe0.html",
+  },
+    "7062283": {
     name: "df5dc91fb87d2f5156abb23526e79c6a7692b147.pdf",
-    title: "Crônicas de Luthera - Udhar",
+    title: "Crônicas de Luthera - Udhar | Leitura online Premium",
     url: "https://heyzine.com/flip-book/df5dc91fb8.html",
   },
-  "fb056612-bcc6-4217-9e6d-2a5d1110ac2f": {
-    name: "df5dc91fb87d2f5156abb23526e79c6a7692b147.pdf",
-    title: "Crônicas de Luthera - Udhar",
-    url: "https://heyzine.com/flip-book/df5dc91fb8.html",
+    "7184211": {
+    name: "64d61a857998bd6c8c18b2bb2620d1dce75ed067.pdf",
+    title: "Crônicas de Luthera - Os Paladinos de Aterom | versão colorida e estendida | leitura online Premium",
+    url: "https://heyzine.com/flip-book/64d61a8579.html",
+  },
+    "6978497": {
+    name: "803ad25bde64f1abc27b33c30a6d43a881b5bb52.pdf",
+    title: "Crônicas de Luthera - Avartrax | versão colorida e estendida | leitura online Premium",
+    url: "https://heyzine.com/flip-book/803ad25bde.html",
   },
 };
 
