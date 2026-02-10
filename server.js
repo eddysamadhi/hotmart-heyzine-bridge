@@ -32,36 +32,36 @@ const DISCOVER_ONLY_EVENTS = new Set([
 ]);
 
 // 3) Mapa Hotmart -> Heyzine
-// ✅ PRODUÇÃO: use ucode como chave (product.ucode).
-// ✅ TRANSIÇÃO: pode manter ids como fallback (product.id) enquanto descobre ucodes.
+// ✅ PRODUÇÃO: use SOMENTE ucode como chave (product.ucode).
 const PRODUCT_MAP = {
-  // Exemplos com ID (fallback temporário — remova quando tiver ucode):
-  "7040305": {
+  // ✅ Substitua as chaves abaixo pelos UCODES reais dos produtos na Hotmart.
+  // EXEMPLO:
+  // "UCODE-DO-GELLIAN": { ... }
+
+  // (Mantive seus exemplos, mas AGORA como placeholder: TROQUE as chaves por ucode)
+  "TROQUE_PARA_UCODE_7040305": {
     name: "149c95dbe08200def69527e27e4de9552dfa17f9.pdf",
     title:
       "Crônicas de Luthera - Gellian | versão colorida e estendida | leitura online Premium",
     url: "https://heyzine.com/flip-book/149c95dbe0.html",
   },
-  "7062283": {
+  "bedc6fed-33a3-47c7-a33e-c66f433c1500": {
     name: "df5dc91fb87d2f5156abb23526e79c6a7692b147.pdf",
     title: "Crônicas de Luthera - Udhar | Leitura online Premium",
     url: "https://heyzine.com/flip-book/df5dc91fb8.html",
   },
-  "7184211": {
+  "TROQUE_PARA_UCODE_7184211": {
     name: "64d61a857998bd6c8c18b2bb2620d1dce75ed067.pdf",
     title:
       "Crônicas de Luthera - Os Paladinos de Aterom | versão colorida e estendida | leitura online Premium",
     url: "https://heyzine.com/flip-book/64d61a8579.html",
   },
-  "6978497": {
+  "TROQUE_PARA_UCODE_6978497": {
     name: "803ad25bde64f1abc27b33c30a6d43a881b5bb52.pdf",
     title:
       "Crônicas de Luthera - Avartrax | versão colorida e estendida | leitura online Premium",
     url: "https://heyzine.com/flip-book/803ad25bde.html",
   },
-
-  // Exemplos (quando você descobrir, substitua por ucode e remova os ids):
-  // "UCODE-XXXX": { ... }
 };
 
 // ✅ Correção: true significa "permitir duplicados"
@@ -81,21 +81,15 @@ function extractProductIdentifiers(payload) {
   const product = payload?.data?.product || {};
   return {
     ucode: product?.ucode ? String(product.ucode) : null,
-    id: product?.id != null ? String(product.id) : null,
     name: product?.name || product?.title || null,
   };
 }
 
-// ✅ PRODUÇÃO: a doc recomenda product.ucode como chave.
-// ✅ TRANSIÇÃO: mantém fallback para product.id até você mapear todos os ucodes.
+// ✅ PRODUÇÃO: usa SOMENTE product.ucode como chave.
+// (Se não vier ucode, trata como erro de payload.)
 function pickProductKey(payload) {
   const ucode = payload?.data?.product?.ucode;
-  if (ucode) return String(ucode);
-
-  const pid = payload?.data?.product?.id;
-  if (pid && pid !== 0) return String(pid);
-
-  return null;
+  return ucode ? String(ucode) : null;
 }
 
 function getHotmartHottok(req) {
@@ -295,7 +289,7 @@ app.post("/webhooks/hotmart", async (req, res) => {
     // - Não cria acesso
     // - Não remove acesso
     // - Não envia email ao comprador
-    // - Apenas registra ucode/id do produto (log + auditoria opcional)
+    // - Apenas registra ucode do produto (log + auditoria opcional)
     if (HOTMART_DISCOVER_UCODE) {
       if (event && DISCOVER_ONLY_EVENTS.size > 0 && !DISCOVER_ONLY_EVENTS.has(event)) {
         console.log("[DISCOVER_UCODE] Ignorado por evento:", event);
@@ -333,15 +327,15 @@ app.post("/webhooks/hotmart", async (req, res) => {
     // 2) Validação mínima (modo produção normal)
     const productKey = pickProductKey(payload);
 
-    console.log(">>> productKey", productKey);
+    console.log(">>> productKey (ucode)", productKey);
 
     if (!event || !transaction || !productKey) {
-      return res.status(400).send("Missing required fields");
+      return res.status(400).send("Missing required fields (event/transaction/product.ucode)");
     }
 
     const mapped = PRODUCT_MAP[productKey];
     if (!mapped) {
-      console.log("Unmapped productKey:", productKey);
+      console.log("Unmapped product ucode:", productKey);
       // Não falha webhook — apenas ignora
       return res.status(200).send("OK");
     }
@@ -377,7 +371,7 @@ app.post("/webhooks/hotmart", async (req, res) => {
           password,
           heyzineResult: { error: e?.message || String(e) },
           emailResult: { info: "não enviado (heyzine falhou)" },
-          extra: { idempotencyKey, receivedAt, productKey },
+          extra: { idempotencyKey, receivedAt, productUcode: productKey },
         }).catch(() => {});
 
         return res.status(500).send("Heyzine error");
@@ -409,7 +403,7 @@ app.post("/webhooks/hotmart", async (req, res) => {
         password,
         heyzineResult,
         emailResult,
-        extra: { idempotencyKey, receivedAt, productKey },
+        extra: { idempotencyKey, receivedAt, productUcode: productKey },
       }).catch(() => {});
 
       console.log(
@@ -442,7 +436,7 @@ app.post("/webhooks/hotmart", async (req, res) => {
           password: "(n/a)",
           heyzineResult: { error: e?.message || String(e) },
           emailResult: { info: "revogação falhou (heyzine)" },
-          extra: { idempotencyKey, receivedAt, productKey },
+          extra: { idempotencyKey, receivedAt, productUcode: productKey },
         }).catch(() => {});
 
         return res.status(500).send("Heyzine error");
@@ -458,7 +452,7 @@ app.post("/webhooks/hotmart", async (req, res) => {
         password: "(n/a)",
         heyzineResult: revokeResult,
         emailResult: { info: "revogação de acesso (sem envio ao comprador)" },
-        extra: { idempotencyKey, receivedAt, productKey },
+        extra: { idempotencyKey, receivedAt, productUcode: productKey },
       }).catch(() => {});
 
       console.log(
