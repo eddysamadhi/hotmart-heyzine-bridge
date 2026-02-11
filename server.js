@@ -25,6 +25,7 @@ const HEYZINE_API_KEY = process.env.HEYZINE_API_KEY;
 const HOTMART_DISCOVER_UCODE = process.env.HOTMART_DISCOVER_UCODE === "true";
 
 // (Opcional) limitar a descoberta a certos eventos (para evitar spam)
+// Dica: durante a descoberta, considere liberar PURCHASE_COMPLETE também.
 const DISCOVER_ONLY_EVENTS = new Set([
   "PURCHASE_APPROVED",
   // "PURCHASE_COMPLETE",
@@ -32,13 +33,9 @@ const DISCOVER_ONLY_EVENTS = new Set([
 ]);
 
 // 3) Mapa Hotmart -> Heyzine
-// ✅ PRODUÇÃO: use SOMENTE ucode como chave (product.ucode).
+// ✅ PRODUÇÃO: use SOMENTE ucode como chave.
+// ✅ Agora suportamos "múltiplos produtos" na mesma compra via data.product.content.products[].
 const PRODUCT_MAP = {
-  // ✅ Substitua as chaves abaixo pelos UCODES reais dos produtos na Hotmart.
-  // EXEMPLO:
-  // "UCODE-DO-GELLIAN": { ... }
-
-  // (Mantive seus exemplos, mas AGORA como placeholder: TROQUE as chaves por ucode)
   "fb056612-bcc6-4217-9e6d-2a5d1110ac2f": {
     name: "149c95dbe08200def69527e27e4de9552dfa17f9.pdf",
     title:
@@ -77,21 +74,6 @@ function genPassword() {
   return crypto.randomBytes(9).toString("base64url");
 }
 
-function extractProductIdentifiers(payload) {
-  const product = payload?.data?.product || {};
-  return {
-    ucode: product?.ucode ? String(product.ucode) : null,
-    name: product?.name || product?.title || null,
-  };
-}
-
-// ✅ PRODUÇÃO: usa SOMENTE product.ucode como chave.
-// (Se não vier ucode, trata como erro de payload.)
-function pickProductKey(payload) {
-  const ucode = payload?.data?.product?.ucode;
-  return ucode ? String(ucode) : null;
-}
-
 function getHotmartHottok(req) {
   // Express trata headers de forma case-insensitive
   return req.get("X-HOTMART-HOTTOK") || req.get("x-hotmart-hottok");
@@ -114,6 +96,46 @@ function isRevokeEvent(event) {
   );
 }
 
+/**
+ * ✅ Novo: extrai TODOS os produtos (ucodes) relevantes para a compra.
+ * - Sempre inclui data.product.ucode (produto principal)
+ * - Também inclui data.product.content.products[].ucode (itens agregados: bundles, order bump, físico etc.)
+ * - Por padrão, IGNORA produtos físicos (is_physical_product === true), porque Heyzine é digital.
+ * - Remove duplicados e valores vazios.
+ */
+function extractAllProductUcodes(payload, { includePhysical = false } = {}) {
+  const out = [];
+
+  const main = payload?.data?.product;
+  if (main?.ucode) {
+    // Alguns payloads podem ter is_physical_product no nível principal
+    if (includePhysical || !main?.is_physical_product) out.push(String(main.ucode));
+  }
+
+  const contentProducts = main?.content?.products;
+  if (Array.isArray(contentProducts)) {
+    for (const p of contentProducts) {
+      if (!p?.ucode) continue;
+      const isPhysical = Boolean(p?.is_physical_product);
+      if (!includePhysical && isPhysical) continue;
+      out.push(String(p.ucode));
+    }
+  }
+
+  // dedupe + sane
+  return [...new Set(out.filter(Boolean))];
+}
+
+// Mantém utilidade para "discovery" (um produto principal apenas)
+function extractProductIdentifiers(payload) {
+  const product = payload?.data?.product || {};
+  return {
+    ucode: product?.ucode ? String(product.ucode) : null,
+    name: product?.name || product?.title || null,
+  };
+}
+
+// ====== Heyzine ======
 async function heyzineAccessAdd({ name, user, password }) {
   if (!HEYZINE_API_KEY) throw new Error("Missing HEYZINE_API_KEY");
 
@@ -177,6 +199,7 @@ async function heyzineAccessRemove({ name, user }) {
   return data;
 }
 
+// ====== Email ao comprador ======
 async function sendAccessEmail({ to, bookTitle, flipbookUrl, password }) {
   if (!SENDGRID_API_KEY) throw new Error("Missing SENDGRID_API_KEY");
   if (!EMAIL_FROM) throw new Error("Missing EMAIL_FROM");
@@ -289,20 +312,22 @@ app.post("/webhooks/hotmart", async (req, res) => {
     // - Não cria acesso
     // - Não remove acesso
     // - Não envia email ao comprador
-    // - Apenas registra ucode do produto (log + auditoria opcional)
+    // - Agora também lista TODOS os produtos do payload (principal + content.products[])
     if (HOTMART_DISCOVER_UCODE) {
       if (event && DISCOVER_ONLY_EVENTS.size > 0 && !DISCOVER_ONLY_EVENTS.has(event)) {
         console.log("[DISCOVER_UCODE] Ignorado por evento:", event);
         return res.status(200).send("OK");
       }
 
-      const productIds = extractProductIdentifiers(payload);
+      const mainProduct = extractProductIdentifiers(payload);
+      const allUcodes = extractAllProductUcodes(payload, { includePhysical: true });
 
       console.log("[DISCOVER_UCODE] Capturado:", {
         event,
         transaction,
         buyerEmail,
-        product: productIds,
+        mainProduct,
+        allProductsUcodes: allUcodes,
       });
 
       // Auditoria opcional
@@ -310,12 +335,12 @@ app.post("/webhooks/hotmart", async (req, res) => {
         await sendAuditEmail({
           event: `DISCOVER_UCODE:${event || "UNKNOWN"}`,
           buyerEmail,
-          productTitle: productIds?.name || "(no product name)",
+          productTitle: mainProduct?.name || "(no product name)",
           transaction,
           password: "(n/a)",
           heyzineResult: { info: "Modo descoberta ativo: nenhuma ação Heyzine executada" },
           emailResult: { info: "Modo descoberta ativo: nenhum e-mail enviado ao comprador" },
-          extra: { receivedAt, product: productIds },
+          extra: { receivedAt, mainProduct, allProductsUcodes: allUcodes },
         });
       } catch (e) {
         console.error("[DISCOVER_UCODE] Falha ao enviar auditoria:", e?.message || e);
@@ -325,139 +350,261 @@ app.post("/webhooks/hotmart", async (req, res) => {
     }
 
     // 2) Validação mínima (modo produção normal)
-    const productKey = pickProductKey(payload);
+    // ✅ Agora processa uma lista (produto principal + itens content.products[]), ignorando físicos.
+    const productUcodes = extractAllProductUcodes(payload, { includePhysical: false });
 
-    console.log(">>> productKey (ucode)", productKey);
+    console.log(">>> productUcodes (digital)", productUcodes);
 
-    if (!event || !transaction || !productKey) {
-      return res.status(400).send("Missing required fields (event/transaction/product.ucode)");
+    if (!event || !transaction || productUcodes.length === 0) {
+      return res.status(400).send("Missing required fields (event/transaction/product.ucode[s])");
     }
 
-    const mapped = PRODUCT_MAP[productKey];
-    if (!mapped) {
-      console.log("Unmapped product ucode:", productKey);
-      // Não falha webhook — apenas ignora
-      return res.status(200).send("OK");
-    }
-
-    // ✅ Idempotência por evento + transação
-    const idempotencyKey = `${event}:${transaction}`;
+    // ✅ Idempotência base por evento + transação (para replays)
+    const baseIdempotencyKey = `${event}:${transaction}`;
 
     // 3) Eventos que criam acesso
     if (isApprovalEvent(event)) {
-      if (!ALLOW_DUPLICATE_TESTS && processedEvents.has(idempotencyKey)) {
-        console.log(`Duplicate approval skipped: ${idempotencyKey}`);
+      // Se o evento já foi processado globalmente e duplicados não são permitidos, pula.
+      // OBS: Como agora pode haver múltiplos produtos, controlamos também por produto.
+      if (!ALLOW_DUPLICATE_TESTS && processedEvents.has(baseIdempotencyKey)) {
+        console.log(`Duplicate approval skipped (base): ${baseIdempotencyKey}`);
         return res.status(200).send("OK");
       }
 
+      // Uma senha por transação (login é o e-mail), serve para todos os flipbooks dessa compra.
       const password = genPassword();
 
-      // Se Heyzine falhar, retornamos 500 para permitir retry do webhook
-      let heyzineResult;
-      try {
-        heyzineResult = await heyzineAccessAdd({
-          name: mapped.name,
-          user: buyerEmail,
-          password,
-        });
-      } catch (e) {
-        console.error("Heyzine access-add failed:", e?.message || e);
+      const heyzineResults = [];
+      const unmappedUcodes = [];
 
-        await sendAuditEmail({
-          event,
-          buyerEmail,
-          productTitle: mapped.title || mapped.name,
-          transaction,
-          password,
-          heyzineResult: { error: e?.message || String(e) },
-          emailResult: { info: "não enviado (heyzine falhou)" },
-          extra: { idempotencyKey, receivedAt, productUcode: productKey },
-        }).catch(() => {});
+      // Processa cada produto digital que esteja mapeado
+      for (const ucode of productUcodes) {
+        const mapped = PRODUCT_MAP[ucode];
+        if (!mapped) {
+          unmappedUcodes.push(ucode);
+          continue;
+        }
 
-        return res.status(500).send("Heyzine error");
+        // Idempotência por produto (evita duplicar liberação de um item específico)
+        const perProductKey = `${baseIdempotencyKey}:${ucode}`;
+        if (!ALLOW_DUPLICATE_TESTS && processedEvents.has(perProductKey)) {
+          console.log(`Duplicate approval skipped (product): ${perProductKey}`);
+          continue;
+        }
+
+        try {
+          const r = await heyzineAccessAdd({
+            name: mapped.name,
+            user: buyerEmail,
+            password,
+          });
+          heyzineResults.push({ ucode, ok: true, name: mapped.name, result: r });
+          processedEvents.add(perProductKey);
+        } catch (e) {
+          console.error("Heyzine access-add failed:", e?.message || e);
+
+          // Auditoria e 500 para permitir retry do webhook (falha relevante)
+          await sendAuditEmail({
+            event,
+            buyerEmail,
+            productTitle: mapped.title || mapped.name,
+            transaction,
+            password,
+            heyzineResult: { ucode, error: e?.message || String(e) },
+            emailResult: { info: "não enviado (heyzine falhou)" },
+            extra: {
+              receivedAt,
+              baseIdempotencyKey,
+              productUcodes,
+              failingUcode: ucode,
+              unmappedUcodes,
+            },
+          }).catch(() => {});
+
+          return res.status(500).send("Heyzine error");
+        }
       }
 
-      processedEvents.add(idempotencyKey);
+      // Marca o base como processado (se ao menos tentou/fez algo)
+      processedEvents.add(baseIdempotencyKey);
 
       // Envio do email (ao comprador) — se falhar, não derruba o webhook
+      // ✅ Se houver múltiplos livros, envia um e-mail só com lista de links.
       let emailResult = null;
       try {
-        emailResult = await sendAccessEmail({
-          to: buyerEmail,
-          bookTitle: mapped.title || "Seu livro",
-          flipbookUrl: mapped.url,
-          password,
-        });
-        console.log("Email sent:", emailResult);
+        const granted = heyzineResults.filter((x) => x.ok);
+        if (granted.length > 0) {
+          const books = granted
+            .map((x) => {
+              const mapped = PRODUCT_MAP[x.ucode];
+              return {
+                title: mapped?.title || mapped?.name || x.ucode,
+                url: mapped?.url || "(sem url)",
+              };
+            })
+            .filter((b) => b.url && b.url !== "(sem url)");
+
+          if (books.length === 1) {
+            // mantém o e-mail padrão (compatível)
+            emailResult = await sendAccessEmail({
+              to: buyerEmail,
+              bookTitle: books[0].title,
+              flipbookUrl: books[0].url,
+              password,
+            });
+          } else {
+            // e-mail agregado (1 compra -> vários acessos)
+            const subject = `Acesso liberado: ${books.length} itens`;
+            const text = `Seu acesso foi liberado ✅
+
+Login: ${buyerEmail}
+Senha: ${password}
+
+Itens liberados:
+${books.map((b, i) => `${i + 1}) ${b.title}\n   ${b.url}`).join("\n\n")}
+
+Suporte: ${SUPPORT_EMAIL}
+`;
+            const html = `
+              <div style="font-family: Arial, sans-serif; line-height: 1.5">
+                <h2>Seu acesso foi liberado ✅</h2>
+                <p><strong>Login:</strong> ${buyerEmail}<br/>
+                   <strong>Senha:</strong> ${password}</p>
+                <h3>Itens liberados</h3>
+                <ol>
+                  ${books
+                    .map(
+                      (b) =>
+                        `<li><strong>${b.title}</strong><br/><a href="${b.url}">${b.url}</a></li>`
+                    )
+                    .join("")}
+                </ol>
+                <p style="margin-top:16px">
+                  Se houver qualquer problema, responda este e-mail ou fale com: ${SUPPORT_EMAIL}.
+                </p>
+              </div>`;
+
+            const msg = { to: buyerEmail, from: EMAIL_FROM, subject, text, html };
+            const [resp] = await sgMail.send(msg);
+            emailResult = { statusCode: resp.statusCode };
+          }
+
+          console.log("Email sent:", emailResult);
+        } else {
+          emailResult = { info: "nenhum produto mapeado/liberado; e-mail não enviado" };
+          console.log("Email skipped:", emailResult);
+        }
       } catch (e) {
         emailResult = { error: e?.message || String(e) };
         console.error("Email send failed:", e?.message || e);
       }
 
       // Auditoria
+      const titlesGranted = heyzineResults
+        .filter((x) => x.ok)
+        .map((x) => PRODUCT_MAP[x.ucode]?.title || PRODUCT_MAP[x.ucode]?.name || x.ucode);
+
       await sendAuditEmail({
         event,
         buyerEmail,
-        productTitle: mapped.title || mapped.name,
+        productTitle:
+          titlesGranted.length > 0
+            ? `Itens liberados (${titlesGranted.length}): ${titlesGranted.join(" | ")}`
+            : "(nenhum item liberado)",
         transaction,
         password,
-        heyzineResult,
+        heyzineResult: { heyzineResults, unmappedUcodes },
         emailResult,
-        extra: { idempotencyKey, receivedAt, productUcode: productKey },
+        extra: { receivedAt, baseIdempotencyKey, productUcodes },
       }).catch(() => {});
 
       console.log(
-        `Access granted: ${buyerEmail} -> ${mapped.name} (${transaction})`
+        `Access granted: ${buyerEmail} -> ${heyzineResults
+          .filter((x) => x.ok)
+          .map((x) => x.name)
+          .join(", ")} (${transaction})`
       );
+
+      // Mesmo que tenha unmapped, não falha o webhook
+      if (unmappedUcodes.length > 0) {
+        console.log("Unmapped product ucode(s):", unmappedUcodes);
+      }
+
       return res.status(200).send("OK");
     }
 
     // 4) Eventos que revogam acesso
     if (isRevokeEvent(event)) {
-      if (!ALLOW_DUPLICATE_TESTS && processedEvents.has(idempotencyKey)) {
-        console.log(`Duplicate revoke skipped: ${idempotencyKey}`);
+      if (!ALLOW_DUPLICATE_TESTS && processedEvents.has(baseIdempotencyKey)) {
+        console.log(`Duplicate revoke skipped (base): ${baseIdempotencyKey}`);
         return res.status(200).send("OK");
       }
 
-      let revokeResult;
-      try {
-        revokeResult = await heyzineAccessRemove({
-          name: mapped.name,
-          user: buyerEmail,
-        });
-      } catch (e) {
-        console.error("Heyzine access-remove failed:", e?.message || e);
+      const revokeResults = [];
+      const unmappedUcodes = [];
 
-        await sendAuditEmail({
-          event,
-          buyerEmail,
-          productTitle: mapped.title || mapped.name,
-          transaction,
-          password: "(n/a)",
-          heyzineResult: { error: e?.message || String(e) },
-          emailResult: { info: "revogação falhou (heyzine)" },
-          extra: { idempotencyKey, receivedAt, productUcode: productKey },
-        }).catch(() => {});
+      for (const ucode of productUcodes) {
+        const mapped = PRODUCT_MAP[ucode];
+        if (!mapped) {
+          unmappedUcodes.push(ucode);
+          continue;
+        }
 
-        return res.status(500).send("Heyzine error");
+        const perProductKey = `${baseIdempotencyKey}:${ucode}`;
+        if (!ALLOW_DUPLICATE_TESTS && processedEvents.has(perProductKey)) {
+          console.log(`Duplicate revoke skipped (product): ${perProductKey}`);
+          continue;
+        }
+
+        try {
+          const r = await heyzineAccessRemove({
+            name: mapped.name,
+            user: buyerEmail,
+          });
+          revokeResults.push({ ucode, ok: true, name: mapped.name, result: r });
+          processedEvents.add(perProductKey);
+        } catch (e) {
+          console.error("Heyzine access-remove failed:", e?.message || e);
+
+          await sendAuditEmail({
+            event,
+            buyerEmail,
+            productTitle: mapped.title || mapped.name,
+            transaction,
+            password: "(n/a)",
+            heyzineResult: { ucode, error: e?.message || String(e) },
+            emailResult: { info: "revogação falhou (heyzine)" },
+            extra: { receivedAt, baseIdempotencyKey, productUcodes, failingUcode: ucode },
+          }).catch(() => {});
+
+          return res.status(500).send("Heyzine error");
+        }
       }
 
-      processedEvents.add(idempotencyKey);
+      processedEvents.add(baseIdempotencyKey);
 
       await sendAuditEmail({
         event,
         buyerEmail,
-        productTitle: mapped.title || mapped.name,
+        productTitle: `Revogação concluída (${revokeResults.length})`,
         transaction,
         password: "(n/a)",
-        heyzineResult: revokeResult,
+        heyzineResult: { revokeResults, unmappedUcodes },
         emailResult: { info: "revogação de acesso (sem envio ao comprador)" },
-        extra: { idempotencyKey, receivedAt, productUcode: productKey },
+        extra: { receivedAt, baseIdempotencyKey, productUcodes },
       }).catch(() => {});
 
       console.log(
-        `Access revoked: ${buyerEmail} -> ${mapped.name} (${transaction})`
+        `Access revoked: ${buyerEmail} -> ${revokeResults
+          .filter((x) => x.ok)
+          .map((x) => x.name)
+          .join(", ")} (${transaction})`
       );
+
+      if (unmappedUcodes.length > 0) {
+        console.log("Unmapped product ucode(s):", unmappedUcodes);
+      }
+
       return res.status(200).send("OK");
     }
 
