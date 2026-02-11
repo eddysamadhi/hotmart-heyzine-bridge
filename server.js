@@ -48,10 +48,10 @@ const PRODUCT_MAP = {
     url: "https://heyzine.com/flip-book/df5dc91fb8.html",
   },
   "1468f9bc-eab3-4107-b387-29c2aba91b4d": {
-    name: "64d61a857998bd6c8c18b2bb2620d1dce75ed067.pdf",
+    name: "50104cb2c3d7ee491f5be5f65929bb5c00a8c6e8.pdf",
     title:
       "Crônicas de Luthera - Os Paladinos de Aterom | versão colorida e estendida | leitura online Premium",
-    url: "https://heyzine.com/flip-book/64d61a8579.html",
+    url: "https://heyzine.com/flip-book/50104cb2c3.html",
   },
   "14223a24-e05c-4004-bfb8-864c66640c11": {
     name: "803ad25bde64f1abc27b33c30a6d43a881b5bb52.pdf",
