@@ -50,7 +50,7 @@ const PRODUCT_MAP = {
     title: "Crônicas de Luthera - Udhar | Leitura online Premium",
     url: "https://heyzine.com/flip-book/df5dc91fb8.html",
   },
-  "TROQUE_PARA_UCODE_7184211": {
+  "1468f9bc-eab3-4107-b387-29c2aba91b4d": {
     name: "64d61a857998bd6c8c18b2bb2620d1dce75ed067.pdf",
     title:
       "Crônicas de Luthera - Os Paladinos de Aterom | versão colorida e estendida | leitura online Premium",
