@@ -56,7 +56,7 @@ const PRODUCT_MAP = {
       "Crônicas de Luthera - Os Paladinos de Aterom | versão colorida e estendida | leitura online Premium",
     url: "https://heyzine.com/flip-book/64d61a8579.html",
   },
-  "TROQUE_PARA_UCODE_6978497": {
+  "14223a24-e05c-4004-bfb8-864c66640c11": {
     name: "803ad25bde64f1abc27b33c30a6d43a881b5bb52.pdf",
     title:
       "Crônicas de Luthera - Avartrax | versão colorida e estendida | leitura online Premium",
