@@ -39,7 +39,7 @@ const PRODUCT_MAP = {
   // "UCODE-DO-GELLIAN": { ... }
 
   // (Mantive seus exemplos, mas AGORA como placeholder: TROQUE as chaves por ucode)
-  "TROQUE_PARA_UCODE_7040305": {
+  "fb056612-bcc6-4217-9e6d-2a5d1110ac2f": {
     name: "149c95dbe08200def69527e27e4de9552dfa17f9.pdf",
     title:
       "Crônicas de Luthera - Gellian | versão colorida e estendida | leitura online Premium",
