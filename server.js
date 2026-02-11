@@ -36,13 +36,13 @@ const DISCOVER_ONLY_EVENTS = new Set([
 // ✅ PRODUÇÃO: use SOMENTE ucode como chave.
 // ✅ Agora suportamos "múltiplos produtos" na mesma compra via data.product.content.products[].
 const PRODUCT_MAP = {
-  "fb056612-bcc6-4217-9e6d-2a5d1110ac2f": {
+  "bedc6fed-33a3-47c7-a33e-c66f433c1500": {
     name: "149c95dbe08200def69527e27e4de9552dfa17f9.pdf",
     title:
       "Crônicas de Luthera - Gellian | versão colorida e estendida | leitura online Premium",
     url: "https://heyzine.com/flip-book/149c95dbe0.html",
   },
-  "bedc6fed-33a3-47c7-a33e-c66f433c1500": {
+    "fb056612-bcc6-4217-9e6d-2a5d1110ac2f": {
     name: "df5dc91fb87d2f5156abb23526e79c6a7692b147.pdf",
     title: "Crônicas de Luthera - Udhar | Leitura online Premium",
     url: "https://heyzine.com/flip-book/df5dc91fb8.html",
