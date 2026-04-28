@@ -1,2 +1,2 @@
 # hotmart-heyzine-bridge
-Webhook Hotmart para acesso Heyzine
+Webhook Hotmart para acesso-Heyzine
