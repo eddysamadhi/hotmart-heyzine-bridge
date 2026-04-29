@@ -1,40 +1,33 @@
 import express from "express";
 import crypto from "crypto";
-import sgMail from "@sendgrid/mail";
+import { Resend } from "resend";
 
 const app = express();
 app.use(express.json({ limit: "1mb" }));
 
 // ====== CONFIG (Railway env vars) ======
-const SENDGRID_API_KEY = process.env.SENDGRID_API_KEY;
-const EMAIL_FROM = process.env.EMAIL_FROM; // ex: contato@eddysamadhi.com
+const RESEND_API_KEY = process.env.RESEND_API_KEY;
+const resend = RESEND_API_KEY ? new Resend(RESEND_API_KEY) : null;
+
+const EMAIL_FROM = process.env.EMAIL_FROM; // ex: noreply@cronicasdeluthera.com.br
 const SUPPORT_EMAIL = process.env.SUPPORT_EMAIL || EMAIL_FROM;
 
-// ✅ Auditoria (opcional): se setado, envia relatório do processamento
+// Auditoria opcional
 const EMAIL_AUDITORIA = process.env.EMAIL_AUDITORIA;
 
-if (SENDGRID_API_KEY) sgMail.setApiKey(SENDGRID_API_KEY);
-
-// 1) Um segredo que só você conhece (protege o endpoint)
+// Segurança Hotmart
 const HOTMART_HOTTOK = process.env.HOTMART_HOTTOK;
 
-// 2) API Key da Heyzine (Bearer)
+// API Key Heyzine
 const HEYZINE_API_KEY = process.env.HEYZINE_API_KEY;
 
-// ✅ Modo "descoberta de ucode" (SAFE: não cria acesso, não remove, não envia email ao comprador)
+// Modo descoberta
 const HOTMART_DISCOVER_UCODE = process.env.HOTMART_DISCOVER_UCODE === "true";
 
-// (Opcional) limitar a descoberta a certos eventos (para evitar spam)
-// Dica: durante a descoberta, considere liberar PURCHASE_COMPLETE também.
 const DISCOVER_ONLY_EVENTS = new Set([
   "PURCHASE_APPROVED",
-  // "PURCHASE_COMPLETE",
-  // "PURCHASE_DELAYED",
 ]);
 
-// 3) Mapa Hotmart -> Heyzine
-// ✅ PRODUÇÃO: use SOMENTE ucode como chave.
-// ✅ Agora suportamos "múltiplos produtos" na mesma compra via data.product.content.products[].
 const PRODUCT_MAP = {
   "bedc6fed-33a3-47c7-a33e-c66f433c1500": {
     name: "149c95dbe08200def69527e27e4de9552dfa17f9.pdf",
@@ -42,7 +35,7 @@ const PRODUCT_MAP = {
       "Crônicas de Luthera - Gellian | versão colorida e estendida | leitura online Premium",
     url: "https://heyzine.com/flip-book/149c95dbe0.html",
   },
-    "fb056612-bcc6-4217-9e6d-2a5d1110ac2f": {
+  "fb056612-bcc6-4217-9e6d-2a5d1110ac2f": {
     name: "df5dc91fb87d2f5156abb23526e79c6a7692b147.pdf",
     title: "Crônicas de Luthera - Udhar | Leitura online Premium",
     url: "https://heyzine.com/flip-book/df5dc91fb8.html",
@@ -61,31 +54,23 @@ const PRODUCT_MAP = {
   },
 };
 
-// ✅ Correção: true significa "permitir duplicados"
 const ALLOW_DUPLICATE_TESTS = process.env.ALLOW_DUPLICATE_TESTS === "true";
 
-// ====== Idempotência simples (memória) ======
-// Em produção “forte”, use banco (Redis/Postgres). Isso aqui evita duplicar em replays rápidos.
 const processedEvents = new Set();
 
-// ====== Utils ======
 function genPassword() {
-  // senha forte e curta o suficiente para digitar (12 chars base64url)
   return crypto.randomBytes(9).toString("base64url");
 }
 
 function getHotmartHottok(req) {
-  // Express trata headers de forma case-insensitive
   return req.get("X-HOTMART-HOTTOK") || req.get("x-hotmart-hottok");
 }
 
 function isApprovalEvent(event) {
-  // Hotmart v2 tipicamente usa PURCHASE_*
   return event === "PURCHASE_APPROVED" || event === "PURCHASE_COMPLETE";
 }
 
 function isRevokeEvent(event) {
-  // aceitar tanto família PURCHASE_* quanto nomes curtos (compat)
   return (
     event === "PURCHASE_REFUNDED" ||
     event === "PURCHASE_CANCELED" ||
@@ -96,20 +81,14 @@ function isRevokeEvent(event) {
   );
 }
 
-/**
- * ✅ Novo: extrai TODOS os produtos (ucodes) relevantes para a compra.
- * - Sempre inclui data.product.ucode (produto principal)
- * - Também inclui data.product.content.products[].ucode (itens agregados: bundles, order bump, físico etc.)
- * - Por padrão, IGNORA produtos físicos (is_physical_product === true), porque Heyzine é digital.
- * - Remove duplicados e valores vazios.
- */
 function extractAllProductUcodes(payload, { includePhysical = false } = {}) {
   const out = [];
 
   const main = payload?.data?.product;
   if (main?.ucode) {
-    // Alguns payloads podem ter is_physical_product no nível principal
-    if (includePhysical || !main?.is_physical_product) out.push(String(main.ucode));
+    if (includePhysical || !main?.is_physical_product) {
+      out.push(String(main.ucode));
+    }
   }
 
   const contentProducts = main?.content?.products;
@@ -122,11 +101,9 @@ function extractAllProductUcodes(payload, { includePhysical = false } = {}) {
     }
   }
 
-  // dedupe + sane
   return [...new Set(out.filter(Boolean))];
 }
 
-// Mantém utilidade para "discovery" (um produto principal apenas)
 function extractProductIdentifiers(payload) {
   const product = payload?.data?.product || {};
   return {
@@ -199,11 +176,28 @@ async function heyzineAccessRemove({ name, user }) {
   return data;
 }
 
-// ====== Email ao comprador ======
-async function sendAccessEmail({ to, bookTitle, flipbookUrl, password }) {
-  if (!SENDGRID_API_KEY) throw new Error("Missing SENDGRID_API_KEY");
+// ====== Resend ======
+async function sendEmail({ to, subject, text, html }) {
+  if (!RESEND_API_KEY || !resend) throw new Error("Missing RESEND_API_KEY");
   if (!EMAIL_FROM) throw new Error("Missing EMAIL_FROM");
 
+  const { data, error } = await resend.emails.send({
+    from: EMAIL_FROM,
+    to,
+    subject,
+    text,
+    html,
+  });
+
+  if (error) {
+    throw new Error(error.message || JSON.stringify(error));
+  }
+
+  return data;
+}
+
+// ====== Email ao comprador ======
+async function sendAccessEmail({ to, bookTitle, flipbookUrl, password }) {
   const subject = `Acesso liberado: ${bookTitle}`;
 
   const text = `Seu acesso foi liberado ✅
@@ -231,13 +225,10 @@ Suporte: ${SUPPORT_EMAIL}
     </p>
   </div>`;
 
-  const msg = { to, from: EMAIL_FROM, subject, text, html };
-
-  const [resp] = await sgMail.send(msg);
-  return { statusCode: resp.statusCode };
+  return await sendEmail({ to, subject, text, html });
 }
 
-// ✅ Email de auditoria (condicional via env var EMAIL_AUDITORIA)
+// ====== Email de auditoria ======
 async function sendAuditEmail({
   event,
   buyerEmail,
@@ -249,7 +240,6 @@ async function sendAuditEmail({
   extra,
 }) {
   if (!EMAIL_AUDITORIA) return;
-  if (!SENDGRID_API_KEY || !EMAIL_FROM) return;
 
   const subject = `🧪 Webhook Hotmart — ${event} — ${transaction}`;
 
@@ -274,14 +264,12 @@ Extra:
 ${extra ? JSON.stringify(extra, null, 2) : "(n/a)"}
 `;
 
-  const msg = {
+  await sendEmail({
     to: EMAIL_AUDITORIA,
-    from: EMAIL_FROM,
     subject,
     text,
-  };
-
-  await sgMail.send(msg);
+    html: `<pre>${text}</pre>`,
+  });
 }
 
 // ====== Healthcheck ======
@@ -292,7 +280,6 @@ app.post("/webhooks/hotmart", async (req, res) => {
   const receivedAt = new Date().toISOString();
 
   try {
-    // 1) Segurança: rejeitar se segredo não bater
     const incomingHottok = getHotmartHottok(req);
 
     if (!HOTMART_HOTTOK || incomingHottok !== HOTMART_HOTTOK) {
@@ -303,24 +290,25 @@ app.post("/webhooks/hotmart", async (req, res) => {
 
     const event = payload?.event;
     const buyerEmail = payload?.data?.buyer?.email || "(no buyer email)";
-    const transaction = payload?.data?.purchase?.transaction || "(no transaction)";
+    const transaction =
+      payload?.data?.purchase?.transaction || "(no transaction)";
 
-    // Log base (não despeja payload inteiro)
     console.log(">>> webhook", receivedAt, event, transaction);
 
-    // ✅ MODO DESCOBERTA DE UCODE (SAFE)
-    // - Não cria acesso
-    // - Não remove acesso
-    // - Não envia email ao comprador
-    // - Agora também lista TODOS os produtos do payload (principal + content.products[])
     if (HOTMART_DISCOVER_UCODE) {
-      if (event && DISCOVER_ONLY_EVENTS.size > 0 && !DISCOVER_ONLY_EVENTS.has(event)) {
+      if (
+        event &&
+        DISCOVER_ONLY_EVENTS.size > 0 &&
+        !DISCOVER_ONLY_EVENTS.has(event)
+      ) {
         console.log("[DISCOVER_UCODE] Ignorado por evento:", event);
         return res.status(200).send("OK");
       }
 
       const mainProduct = extractProductIdentifiers(payload);
-      const allUcodes = extractAllProductUcodes(payload, { includePhysical: true });
+      const allUcodes = extractAllProductUcodes(payload, {
+        includePhysical: true,
+      });
 
       console.log("[DISCOVER_UCODE] Capturado:", {
         event,
@@ -330,7 +318,6 @@ app.post("/webhooks/hotmart", async (req, res) => {
         allProductsUcodes: allUcodes,
       });
 
-      // Auditoria opcional
       try {
         await sendAuditEmail({
           event: `DISCOVER_UCODE:${event || "UNKNOWN"}`,
@@ -338,46 +325,49 @@ app.post("/webhooks/hotmart", async (req, res) => {
           productTitle: mainProduct?.name || "(no product name)",
           transaction,
           password: "(n/a)",
-          heyzineResult: { info: "Modo descoberta ativo: nenhuma ação Heyzine executada" },
-          emailResult: { info: "Modo descoberta ativo: nenhum e-mail enviado ao comprador" },
+          heyzineResult: {
+            info: "Modo descoberta ativo: nenhuma ação Heyzine executada",
+          },
+          emailResult: {
+            info: "Modo descoberta ativo: nenhum e-mail enviado ao comprador",
+          },
           extra: { receivedAt, mainProduct, allProductsUcodes: allUcodes },
         });
       } catch (e) {
-        console.error("[DISCOVER_UCODE] Falha ao enviar auditoria:", e?.message || e);
+        console.error(
+          "[DISCOVER_UCODE] Falha ao enviar auditoria:",
+          e?.message || e
+        );
       }
 
       return res.status(200).send("OK");
     }
 
-    // 2) Validação mínima (modo produção normal)
-    // ✅ Agora processa uma lista (produto principal + itens content.products[]), ignorando físicos.
-    const productUcodes = extractAllProductUcodes(payload, { includePhysical: false });
+    const productUcodes = extractAllProductUcodes(payload, {
+      includePhysical: false,
+    });
 
     console.log(">>> productUcodes (digital)", productUcodes);
 
     if (!event || !transaction || productUcodes.length === 0) {
-      return res.status(400).send("Missing required fields (event/transaction/product.ucode[s])");
+      return res
+        .status(400)
+        .send("Missing required fields (event/transaction/product.ucode[s])");
     }
 
-    // ✅ Idempotência base por evento + transação (para replays)
     const baseIdempotencyKey = `${event}:${transaction}`;
 
-    // 3) Eventos que criam acesso
     if (isApprovalEvent(event)) {
-      // Se o evento já foi processado globalmente e duplicados não são permitidos, pula.
-      // OBS: Como agora pode haver múltiplos produtos, controlamos também por produto.
       if (!ALLOW_DUPLICATE_TESTS && processedEvents.has(baseIdempotencyKey)) {
         console.log(`Duplicate approval skipped (base): ${baseIdempotencyKey}`);
         return res.status(200).send("OK");
       }
 
-      // Uma senha por transação (login é o e-mail), serve para todos os flipbooks dessa compra.
       const password = genPassword();
 
       const heyzineResults = [];
       const unmappedUcodes = [];
 
-      // Processa cada produto digital que esteja mapeado
       for (const ucode of productUcodes) {
         const mapped = PRODUCT_MAP[ucode];
         if (!mapped) {
@@ -385,7 +375,6 @@ app.post("/webhooks/hotmart", async (req, res) => {
           continue;
         }
 
-        // Idempotência por produto (evita duplicar liberação de um item específico)
         const perProductKey = `${baseIdempotencyKey}:${ucode}`;
         if (!ALLOW_DUPLICATE_TESTS && processedEvents.has(perProductKey)) {
           console.log(`Duplicate approval skipped (product): ${perProductKey}`);
@@ -398,12 +387,18 @@ app.post("/webhooks/hotmart", async (req, res) => {
             user: buyerEmail,
             password,
           });
-          heyzineResults.push({ ucode, ok: true, name: mapped.name, result: r });
+
+          heyzineResults.push({
+            ucode,
+            ok: true,
+            name: mapped.name,
+            result: r,
+          });
+
           processedEvents.add(perProductKey);
         } catch (e) {
           console.error("Heyzine access-add failed:", e?.message || e);
 
-          // Auditoria e 500 para permitir retry do webhook (falha relevante)
           await sendAuditEmail({
             event,
             buyerEmail,
@@ -425,14 +420,13 @@ app.post("/webhooks/hotmart", async (req, res) => {
         }
       }
 
-      // Marca o base como processado (se ao menos tentou/fez algo)
       processedEvents.add(baseIdempotencyKey);
 
-      // Envio do email (ao comprador) — se falhar, não derruba o webhook
-      // ✅ Se houver múltiplos livros, envia um e-mail só com lista de links.
       let emailResult = null;
+
       try {
         const granted = heyzineResults.filter((x) => x.ok);
+
         if (granted.length > 0) {
           const books = granted
             .map((x) => {
@@ -445,7 +439,6 @@ app.post("/webhooks/hotmart", async (req, res) => {
             .filter((b) => b.url && b.url !== "(sem url)");
 
           if (books.length === 1) {
-            // mantém o e-mail padrão (compatível)
             emailResult = await sendAccessEmail({
               to: buyerEmail,
               bookTitle: books[0].title,
@@ -453,8 +446,8 @@ app.post("/webhooks/hotmart", async (req, res) => {
               password,
             });
           } else {
-            // e-mail agregado (1 compra -> vários acessos)
             const subject = `Acesso liberado: ${books.length} itens`;
+
             const text = `Seu acesso foi liberado ✅
 
 Login: ${buyerEmail}
@@ -465,6 +458,7 @@ ${books.map((b, i) => `${i + 1}) ${b.title}\n   ${b.url}`).join("\n\n")}
 
 Suporte: ${SUPPORT_EMAIL}
 `;
+
             const html = `
               <div style="font-family: Arial, sans-serif; line-height: 1.5">
                 <h2>Seu acesso foi liberado ✅</h2>
@@ -484,32 +478,43 @@ Suporte: ${SUPPORT_EMAIL}
                 </p>
               </div>`;
 
-            const msg = { to: buyerEmail, from: EMAIL_FROM, subject, text, html };
-            const [resp] = await sgMail.send(msg);
-            emailResult = { statusCode: resp.statusCode };
+            emailResult = await sendEmail({
+              to: buyerEmail,
+              subject,
+              text,
+              html,
+            });
           }
 
           console.log("Email sent:", emailResult);
         } else {
-          emailResult = { info: "nenhum produto mapeado/liberado; e-mail não enviado" };
+          emailResult = {
+            info: "nenhum produto mapeado/liberado; e-mail não enviado",
+          };
           console.log("Email skipped:", emailResult);
         }
       } catch (e) {
         emailResult = { error: e?.message || String(e) };
-        console.error("Email send failed:", e.response?.body || e.message || e);
+        console.error("Email send failed:", e?.message || e);
       }
 
-      // Auditoria
       const titlesGranted = heyzineResults
         .filter((x) => x.ok)
-        .map((x) => PRODUCT_MAP[x.ucode]?.title || PRODUCT_MAP[x.ucode]?.name || x.ucode);
+        .map(
+          (x) =>
+            PRODUCT_MAP[x.ucode]?.title ||
+            PRODUCT_MAP[x.ucode]?.name ||
+            x.ucode
+        );
 
       await sendAuditEmail({
         event,
         buyerEmail,
         productTitle:
           titlesGranted.length > 0
-            ? `Itens liberados (${titlesGranted.length}): ${titlesGranted.join(" | ")}`
+            ? `Itens liberados (${titlesGranted.length}): ${titlesGranted.join(
+                " | "
+              )}`
             : "(nenhum item liberado)",
         transaction,
         password,
@@ -525,7 +530,6 @@ Suporte: ${SUPPORT_EMAIL}
           .join(", ")} (${transaction})`
       );
 
-      // Mesmo que tenha unmapped, não falha o webhook
       if (unmappedUcodes.length > 0) {
         console.log("Unmapped product ucode(s):", unmappedUcodes);
       }
@@ -533,7 +537,6 @@ Suporte: ${SUPPORT_EMAIL}
       return res.status(200).send("OK");
     }
 
-    // 4) Eventos que revogam acesso
     if (isRevokeEvent(event)) {
       if (!ALLOW_DUPLICATE_TESTS && processedEvents.has(baseIdempotencyKey)) {
         console.log(`Duplicate revoke skipped (base): ${baseIdempotencyKey}`);
@@ -561,7 +564,14 @@ Suporte: ${SUPPORT_EMAIL}
             name: mapped.name,
             user: buyerEmail,
           });
-          revokeResults.push({ ucode, ok: true, name: mapped.name, result: r });
+
+          revokeResults.push({
+            ucode,
+            ok: true,
+            name: mapped.name,
+            result: r,
+          });
+
           processedEvents.add(perProductKey);
         } catch (e) {
           console.error("Heyzine access-remove failed:", e?.message || e);
@@ -574,7 +584,12 @@ Suporte: ${SUPPORT_EMAIL}
             password: "(n/a)",
             heyzineResult: { ucode, error: e?.message || String(e) },
             emailResult: { info: "revogação falhou (heyzine)" },
-            extra: { receivedAt, baseIdempotencyKey, productUcodes, failingUcode: ucode },
+            extra: {
+              receivedAt,
+              baseIdempotencyKey,
+              productUcodes,
+              failingUcode: ucode,
+            },
           }).catch(() => {});
 
           return res.status(500).send("Heyzine error");
@@ -608,11 +623,9 @@ Suporte: ${SUPPORT_EMAIL}
       return res.status(200).send("OK");
     }
 
-    // 5) Outros eventos: só aceita
     return res.status(200).send("OK");
   } catch (err) {
     console.error("Webhook fatal error:", err);
-    // Preferível 500 para permitir retry em erro inesperado
     return res.status(500).send("Internal error");
   }
 });
