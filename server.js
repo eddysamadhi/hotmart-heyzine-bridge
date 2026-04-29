@@ -496,7 +496,7 @@ Suporte: ${SUPPORT_EMAIL}
         }
       } catch (e) {
         emailResult = { error: e?.message || String(e) };
-        console.error("Email send failed:", e?.message || e);
+        console.error("Email send failed:", e.response?.body || e.message || e);
       }
 
       // Auditoria
