@@ -40,6 +40,16 @@ const PRODUCT_MAP = {
     title: "Crônicas de Luthera - Udhar | Leitura online Premium",
     url: "https://heyzine.com/flip-book/df5dc91fb8.html",
   },
+    "29bb20a7-983c-467b-bdba-a4228826a19c": {
+    name: "df5dc91fb87d2f5156abb23526e79c6a7692b147.pdf",
+    title: "Crônicas de Luthera - Udhar | Leitura online Premium",
+    url: "https://heyzine.com/flip-book/df5dc91fb8.html",
+  },
+    "559fef42-3406-4d82-b775-d09bd33936b1": {
+    name: "df5dc91fb87d2f5156abb23526e79c6a7692b147.pdf",
+    title: "Crônicas de Luthera - Udhar | Leitura online Premium",
+    url: "https://heyzine.com/flip-book/df5dc91fb8.html",
+  },
   "1468f9bc-eab3-4107-b387-29c2aba91b4d": {
     name: "50104cb2c3d7ee491f5be5f65929bb5c00a8c6e8.pdf",
     title:
