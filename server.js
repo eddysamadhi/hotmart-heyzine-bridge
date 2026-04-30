@@ -275,6 +275,57 @@ ${extra ? JSON.stringify(extra, null, 2) : "(n/a)"}
 // ====== Healthcheck ======
 app.get("/", (req, res) => res.status(200).send("OK"));
 
+function chunkLog(label, text, chunkSize = 8000) {
+  const str = typeof text === "string" ? text : JSON.stringify(text, null, 2);
+
+  for (let i = 0; i < str.length; i += chunkSize) {
+    console.log(`${label} [parte ${Math.floor(i / chunkSize) + 1}]`);
+    console.log(str.slice(i, i + chunkSize));
+  }
+}
+
+function redactHeaders(headers) {
+  return {
+    "content-type": headers["content-type"],
+    "user-agent": headers["user-agent"],
+    "x-hotmart-hottok": headers["x-hotmart-hottok"] ? "[RECEBIDO]" : undefined,
+    "x-hotmart-signature": headers["x-hotmart-signature"] ? "[RECEBIDO]" : undefined,
+  };
+}
+
+function findProductLikeFields(obj, path = "", out = []) {
+  if (!obj || typeof obj !== "object") return out;
+
+  for (const [key, value] of Object.entries(obj)) {
+    const currentPath = path ? `${path}.${key}` : key;
+    const lowerKey = key.toLowerCase();
+
+    if (
+      lowerKey.includes("product") ||
+      lowerKey.includes("ucode") ||
+      lowerKey === "id" ||
+      lowerKey.includes("offer") ||
+      lowerKey.includes("transaction") ||
+      lowerKey.includes("content")
+    ) {
+      out.push({
+        path: currentPath,
+        value:
+          typeof value === "object"
+            ? JSON.stringify(value).slice(0, 1000)
+            : value,
+      });
+    }
+
+    if (typeof value === "object") {
+      findProductLikeFields(value, currentPath, out);
+    }
+  }
+
+  return out;
+}
+
+
 // ====== Webhook Hotmart ======
 app.post("/webhooks/hotmart", async (req, res) => {
   const receivedAt = new Date().toISOString();
@@ -288,6 +339,20 @@ app.post("/webhooks/hotmart", async (req, res) => {
 
     const payload = req.body;
 
+console.log("========== HOTMART WEBHOOK DEBUG ==========");
+console.log("Received at:", receivedAt);
+console.log("Headers:", redactHeaders(req.headers));
+
+chunkLog("PAYLOAD COMPLETO HOTMART", JSON.stringify(payload, null, 2));
+
+const possibleProductFields = findProductLikeFields(payload);
+chunkLog(
+  "POSSÍVEIS CAMPOS DE PRODUTO / ID",
+  JSON.stringify(possibleProductFields, null, 2)
+);
+
+console.log("===========================================");
+    
     const event = payload?.event;
     const buyerEmail = payload?.data?.buyer?.email || "(no buyer email)";
     const transaction =
